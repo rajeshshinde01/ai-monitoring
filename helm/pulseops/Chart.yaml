@@ -1,0 +1,10 @@
+apiVersion: v2
+name: pulseops
+description: Read-only Kubernetes and OpenShift observability dashboard
+type: application
+version: 0.1.0
+appVersion: "1.1.0"
+keywords:
+  - observability
+  - kubernetes
+  - monitoring

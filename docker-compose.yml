@@ -1,0 +1,45 @@
+services:
+  pulseops-ai:
+    build: .
+    ports:
+      - "${APP_PORT:-8090}:8000"
+    environment:
+      MONITORING_TARGET: ${MONITORING_TARGET:-docker}
+      MONITORING_CONTAINER_PREFIX: ${MONITORING_CONTAINER_PREFIX:-mindspark-}
+      KUBERNETES_NAMESPACE: ${KUBERNETES_NAMESPACE:-mindspark-official}
+      LOG_TAIL_LINES: ${LOG_TAIL_LINES:-100}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-5}
+      DATA_DIR: /data
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN:-db.com}
+      AUTH_BOOTSTRAP_ADMIN_EMAILS: ${AUTH_BOOTSTRAP_ADMIN_EMAILS:-}
+      AUTH_ENABLE_BREAK_GLASS_ADMIN: ${AUTH_ENABLE_BREAK_GLASS_ADMIN:-false}
+      AUTH_BREAK_GLASS_USERNAME: ${AUTH_BREAK_GLASS_USERNAME:-admin}
+      AUTH_BREAK_GLASS_PASSWORD: ${AUTH_BREAK_GLASS_PASSWORD:-}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_MAX_LOGIN_ATTEMPTS: ${AUTH_MAX_LOGIN_ATTEMPTS:-5}
+      AUTH_LOCKOUT_MINUTES: ${AUTH_LOCKOUT_MINUTES:-30}
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-development-only-change-me}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${KUBECONFIG_PATH:-/dev/null}:/root/.kube/config:ro
+      - pulseops-data:/data
+    depends_on:
+      - prometheus
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+volumes:
+  prometheus-data:
+  pulseops-data:

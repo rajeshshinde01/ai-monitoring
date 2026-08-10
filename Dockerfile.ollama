@@ -1,0 +1,10 @@
+# Optional local Ollama runtime for Docker Desktop on macOS.
+# Docker Desktop runs Linux containers, so this uses Ollama's supported Linux image
+# and automatically selects a compatible image architecture for the host.
+FROM ollama/ollama:latest
+
+ENV OLLAMA_HOST=0.0.0.0:11434
+
+EXPOSE 11434
+
+HEALTHCHECK --interval=15s --timeout=5s --retries=10 CMD ollama list || exit 1

@@ -1,0 +1,167 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pulseops.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pulseops.labels" . | nindent 4 }}
+spec:
+  replicas: {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }}{{ else }}1{{ end }}
+  selector:
+    matchLabels:
+      {{- include "pulseops.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pulseops.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "pulseops.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: pulseops
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: MONITORING_TARGET
+              value: {{ .Values.monitoring.target | quote }}
+            - name: KUBERNETES_NAMESPACE
+              value: {{ include "pulseops.monitoredNamespace" . | quote }}
+            - name: LOG_TAIL_LINES
+              value: {{ .Values.monitoring.logTailLines | quote }}
+            - name: COLLECT_INTERVAL_SECONDS
+              value: {{ .Values.monitoring.collectIntervalSeconds | quote }}
+            {{- with .Values.monitoring.prometheusUrl }}
+            - name: PROMETHEUS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: PROMETHEUS_ALLOWED_HOSTS
+              value: {{ .Values.monitoring.prometheusAllowedHosts | quote }}
+            - name: DATA_DIR
+              value: /data
+            - name: OLLAMA_ENABLED
+              value: {{ .Values.ollama.enabled | quote }}
+            - name: OLLAMA_BASE_URL
+              value: {{ .Values.ollama.baseUrl | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.ollama.model | quote }}
+            - name: SPLUNK_ENABLED
+              value: {{ .Values.splunk.enabled | quote }}
+            - name: SPLUNK_BASE_URL
+              value: {{ .Values.splunk.baseUrl | quote }}
+            - name: SPLUNK_INDEX
+              value: {{ .Values.splunk.index | quote }}
+            - name: SPLUNK_POD_FIELD
+              value: {{ .Values.splunk.podField | quote }}
+            - name: SPLUNK_SCOPE_FIELD
+              value: {{ .Values.splunk.scopeField | quote }}
+            - name: SPLUNK_SCOPE_VALUE
+              value: {{ .Values.splunk.scopeValue | quote }}
+            - name: SPLUNK_LOOKBACK_MINUTES
+              value: {{ .Values.splunk.lookbackMinutes | quote }}
+            - name: SPLUNK_ALLOWED_HOSTS
+              value: {{ .Values.splunk.allowedHosts | quote }}
+            - name: SPLUNK_VERIFY_TLS
+              value: {{ .Values.splunk.verifyTls | quote }}
+            - name: AUTH_MODE
+              value: {{ .Values.auth.mode | quote }}
+            - name: AUTH_ALLOWED_EMAIL_DOMAIN
+              value: {{ .Values.auth.allowedEmailDomain | quote }}
+            - name: AUTH_BOOTSTRAP_ADMIN_EMAILS
+              value: {{ .Values.auth.bootstrapAdminEmails | quote }}
+            - name: AUTH_ENABLE_BREAK_GLASS_ADMIN
+              value: {{ .Values.auth.enableBreakGlassAdmin | quote }}
+            - name: AUTH_BREAK_GLASS_USERNAME
+              value: {{ .Values.auth.breakGlassUsername | quote }}
+            - name: AUTH_COOKIE_SECURE
+              value: {{ .Values.auth.cookieSecure | quote }}
+            - name: AUTH_MAX_LOGIN_ATTEMPTS
+              value: {{ .Values.auth.maxLoginAttempts | quote }}
+            - name: AUTH_LOCKOUT_MINUTES
+              value: {{ .Values.auth.lockoutMinutes | quote }}
+            - name: OIDC_ISSUER_URL
+              value: {{ .Values.auth.oidcIssuerUrl | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.auth.oidcClientId | quote }}
+            - name: OIDC_REDIRECT_URL
+              value: {{ .Values.auth.oidcRedirectUrl | quote }}
+            {{- if .Values.auth.existingSecret }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+              key: {{ .Values.auth.oidcClientSecretKey }}
+            - name: AUTH_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret }}
+                  key: {{ .Values.auth.sessionSecretKey }}
+            {{- end }}
+            {{- if .Values.auth.breakGlassExistingSecret }}
+            - name: AUTH_BREAK_GLASS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.breakGlassExistingSecret }}
+                  key: {{ .Values.auth.breakGlassPasswordKey }}
+            {{- end }}
+            {{- if .Values.splunk.existingSecret }}
+            - name: SPLUNK_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.splunk.existingSecret }}
+                  key: {{ .Values.splunk.tokenKey }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (include "pulseops.fullname" .) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,45 @@
+# Namespace-scoped, read-only access for PulseOps Kubernetes monitoring.
+# Change every `mindspark-official` value to the namespace PulseOps monitors
+# before applying this file.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pulseops
+  namespace: mindspark-official
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pulseops-readonly
+  namespace: mindspark-official
+rules:
+  # Pod state, resource limits, node placement, and service inventory.
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "watch"]
+  # Read recent container logs for the safe log explorer.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Read deployment and StatefulSet readiness and image versions.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Read CPU and memory usage when Metrics Server is available.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pulseops-readonly
+  namespace: mindspark-official
+subjects:
+  - kind: ServiceAccount
+    name: pulseops
+    namespace: mindspark-official
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pulseops-readonly

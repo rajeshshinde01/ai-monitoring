@@ -1,0 +1,26 @@
+# Non-secret OIDC configuration example.
+# Copy this file outside Git as values-oidc.yaml, replace placeholders,
+# and use it together with the existing OIDC client-secret Kubernetes Secret.
+# The authorization-code OIDC flow is enabled automatically when these values
+# and the referenced Secret are present. Local sign-in remains available as a
+# fallback until the identity provider is validated in dev/UAT.
+
+auth:
+  mode: "oidc"
+  allowedEmailDomain: "db.com"
+  # Comma-separated email addresses approved as initial administrators.
+  # Do not add personal email addresses to a committed file.
+  bootstrapAdminEmails: "admin1@db.com,admin2@db.com"
+  enableBreakGlassAdmin: false
+  breakGlassUsername: "admin"
+  breakGlassExistingSecret: ""
+  breakGlassPasswordKey: "break-glass-password"
+
+  # The name of the Kubernetes Secret containing only the OIDC client secret.
+  existingSecret: "pulseops-auth"
+  oidcClientSecretKey: "oidc-client-secret"
+
+  # Non-secret details from the registered OIDC application.
+  oidcIssuerUrl: "https://YOUR_IDENTITY_PROVIDER.example.com/TENANT/v2.0"
+  oidcClientId: "YOUR_OIDC_APPLICATION_CLIENT_ID"
+  oidcRedirectUrl: "https://pulseops.example.com/api/auth/oidc/callback"

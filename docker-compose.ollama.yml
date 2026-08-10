@@ -1,0 +1,20 @@
+# Optional Ollama runtime. It is deliberately separate from docker-compose.yml
+# so the default PulseOps deployment remains Python-only and lightweight.
+#
+# Start it with:
+# docker compose -f docker-compose.yml -f docker-compose.ollama.yml up --build -d
+services:
+  ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  ollama-data:

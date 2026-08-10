@@ -1,0 +1,11 @@
+{
+  "database": ["postgres", "postgresql", "sql", "connection", "query"],
+  "db": ["postgres", "postgresql", "sql", "connection"],
+  "backend": ["api", "service", "server", "application"],
+  "frontend": ["ui", "web", "browser", "angular"],
+  "unhealthy": ["error", "warning", "restart", "crash", "oom", "failed"],
+  "issue": ["error", "warning", "failed", "restart", "degraded"],
+  "slow": ["latency", "timeout", "performance", "cpu"],
+  "capacity": ["memory", "cpu", "forecast", "oom"],
+  "availability": ["running", "ready", "status", "restart"]
+}

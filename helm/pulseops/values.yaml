@@ -1,0 +1,127 @@
+# Update image.repository and image.tag to the image published by your CI/CD pipeline.
+image:
+  repository: pulseops-ai
+  pullPolicy: IfNotPresent
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Namespace-scoped, read-only Kubernetes API access.
+rbac:
+  create: true
+
+monitoring:
+  target: kubernetes
+  # Defaults to the Helm release namespace when left empty.
+  namespace: ""
+  logTailLines: 100
+  collectIntervalSeconds: 5
+  prometheusUrl: ""
+  prometheusAllowedHosts: ""
+
+ollama:
+  enabled: false
+  baseUrl: "http://ollama:11434"
+  model: "llama3.2:3b"
+
+# Optional Splunk REST API source. Kubernetes remains primary unless monitoring.target=splunk.
+# In Splunk-only mode, set rbac.create=false.
+# The API token must be supplied from an existing Kubernetes Secret, never values.yaml.
+splunk:
+  enabled: false
+  baseUrl: "https://splunk.example.com:8089"
+  index: "main"
+  podField: "kubernetes.pod_name"
+  scopeField: "kubernetes.namespace"
+  scopeValue: ""
+  lookbackMinutes: 15
+  allowedHosts: "splunk.example.com"
+  verifyTls: true
+  existingSecret: ""
+  tokenKey: "token"
+
+# Local sign-in is available. OIDC configuration is reserved for the future SSO flow.
+# Keep OIDC secrets in an existing Secret, not in this file.
+auth:
+  mode: "local"
+  allowedEmailDomain: "db.com"
+  bootstrapAdminEmails: ""
+  enableBreakGlassAdmin: false
+  breakGlassUsername: "admin"
+  breakGlassExistingSecret: ""
+  breakGlassPasswordKey: "break-glass-password"
+  existingSecret: ""
+  oidcIssuerUrl: ""
+  oidcClientId: ""
+  oidcRedirectUrl: ""
+  oidcClientSecretKey: "oidc-client-secret"
+  cookieSecure: true
+  maxLoginAttempts: 5
+  lockoutMinutes: 30
+  sessionSecretKey: "session-secret"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: pulseops.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
