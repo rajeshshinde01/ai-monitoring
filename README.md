@@ -70,7 +70,7 @@ The dashboard keeps a compact local operational history for up to 24 hours in th
 - Pod-level correlation of alerts, events, logs, restarts, and capacity data.
 - Saved local incident workspaces, plus JSON export and print-friendly incident reports.
 
-The **Operator**, **Executive**, and **Developer** controls are dashboard layouts only; they do not enforce access control. Add SSO/RBAC before using this dashboard for multi-user or production access.
+The dashboard enforces three access levels: **Administrator**, **Developer / Operator**, and **Read-only**. Read-only users can review workload status and alerts but cannot view log-level evidence, change settings, or create/change alert rules. OIDC authorization-code sign-in is ready to enable when company SSO details are available.
 
 ## Local Docker monitoring
 
@@ -116,7 +116,7 @@ An optional break-glass administrator uses the username `admin` without an email
 
 OIDC authorization-code sign-in is already included. Local sign-in continues to work until the OIDC configuration is complete. When the issuer URL, client ID, redirect URL, and client secret are all present, the login screen shows **Sign in with company SSO**. The verified OIDC email creates or refreshes the same local access record; configured bootstrap emails become administrators and every other approved-domain user starts as Developer / Operator.
 
-The OIDC client Secret and OIDC session-signing secret are never placed in `values.yaml` or shown in a UI. Use the template at [`k8s/pulseops-auth-secret.example.yaml`](k8s/pulseops-auth-secret.example.yaml) only as a reference, then have the platform team create `pulseops-auth` through the approved secret-management workflow. Configure Helm with `--set auth.existingSecret=pulseops-auth`; PulseOps receives the values without exposing them.
+Helm creates and preserves a random session-signing Secret automatically when `auth.existingSecret` is empty. For OIDC, have the platform team create an approved Secret containing the OIDC client secret and session secret, then set `auth.existingSecret` to that Secret name. Secrets are never placed in `values.yaml` or shown in the UI.
 
 ## Helm deployment
 
@@ -147,7 +147,7 @@ Set `persistence.storageClass` when your cluster does not provide a default Stor
 
 ### Optional Splunk log fallback
 
-Kubernetes pod logs remain the primary source. Splunk is used only when reading `pods/log` fails—for example, when the monitoring identity has no pod-log permission. It does **not** replace the Kubernetes permissions required to collect pod, deployment, service, and metrics data.
+Kubernetes pod logs remain the primary source. Splunk is used only when reading `pods/log` fails—for example, when the monitoring identity has no pod-log permission. It does **not** replace the Kubernetes permissions required to collect pod, deployment, service, and metrics data. The application Service defaults to `ClusterIP`; keep `/health`, `/ready`, and `/metrics` internal, and expose only the dashboard through an approved ingress or route.
 
 In **Intelligence → Integrations**, enable **Splunk log fallback** and enter the approved Splunk management URL, index, pod-name field, and search window. PulseOps stores those non-secret settings in `/data`; it never displays or saves the Splunk token in the UI or PVC.
 

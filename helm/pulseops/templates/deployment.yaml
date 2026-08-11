@@ -103,13 +103,13 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.auth.existingSecret }}
-              key: {{ .Values.auth.oidcClientSecretKey }}
+                  key: {{ .Values.auth.oidcClientSecretKey }}
+            {{- end }}
             - name: AUTH_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.auth.existingSecret }}
+                  name: {{ include "pulseops.authSecretName" . }}
                   key: {{ .Values.auth.sessionSecretKey }}
-            {{- end }}
             {{- if .Values.auth.breakGlassExistingSecret }}
             - name: AUTH_BREAK_GLASS_PASSWORD
               valueFrom:

@@ -1051,7 +1051,7 @@ function selectPod(name, resetTab = true) {
   renderDetails(pod, logs, records);
 }
 
-async function load() {
+async function load(preservePausedLogs = false) {
   try {
     const [response, historyResponse, alertHistoryResponse, readinessResponse] = await Promise.all([fetch('/api/overview'), fetch(`/api/observability/history?minutes=${observabilityMinutes}`), fetch('/api/alert-history'), fetch('/ready')]);
     const payload = await response.json();
@@ -1062,7 +1062,7 @@ async function load() {
     data = payload;
     acknowledgedAlerts = data.alert_acknowledgements || {};
     alertHistory = alertHistoryPayload.events || [];
-    renderSummary(data.summary); renderPlatformHealth(data.summary, data.alerts); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertRules(data.alert_rules || []);
+    renderSummary(data.summary); renderPlatformHealth(data.summary, data.alerts); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); if (!preservePausedLogs || logExplorerLiveTail) renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertRules(data.alert_rules || []);
     document.querySelector('#mode').textContent = data.mode === 'docker' ? 'Local Docker connected' : data.mode === 'splunk' ? 'Splunk external source' : 'Kubernetes connected';
     const collectedAt = data.collector?.last_collected || data.generated_at;
     const ageSeconds = Math.max(0, Math.round((Date.now() - new Date(collectedAt).getTime()) / 1000));
@@ -1207,7 +1207,9 @@ const dependencyPanel = document.querySelector('.dependency-panel');
 dashboardLayout.insertBefore(serviceMapPanel, deploymentInspectorPanel.nextElementSibling);
 dashboardLayout.insertBefore(dependencyPanel, serviceMapPanel.nextElementSibling);
 load();
-setInterval(() => { if (logExplorerLiveTail) load(); }, 30000);
+// Dashboard health refreshes independently. When Live tail is paused, the selected
+// log view stays still while alerts, capacity, and workload status continue updating.
+setInterval(() => load(true), 30000);
 }
 
 async function checkAuthentication() {

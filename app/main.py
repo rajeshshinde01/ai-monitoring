@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import os
@@ -83,6 +84,25 @@ def require_developer_or_administrator(request: Request) -> dict[str, str]:
     if not user or user.get("role") not in {"administrator", "developer"}:
         raise HTTPException(status_code=403, detail="Developer / Operator or Administrator access is required for this feature.")
     return user
+
+
+def snapshot_for_user(snapshot: dict[str, Any], user: dict[str, str] | None) -> dict[str, Any]:
+    """Remove log-level evidence for read-only users before any feature uses it."""
+    if user and user.get("role") != "readonly":
+        return snapshot
+    restricted = deepcopy(snapshot)
+    restricted["logs"] = {}
+    restricted["structured_logs"] = {}
+    restricted["incident_evidence"] = []
+    restricted["analysis"] = {
+        pod["name"]: {
+            "severity": "healthy",
+            "counts": {"errors": 0, "warnings": 0, "oom_events": 0},
+            "findings": ["Log-level evidence is available to Developer / Operator and Administrator accounts."],
+        }
+        for pod in restricted.get("pods", [])
+    }
+    return restricted
 
 
 class AlertRuleUpdate(BaseModel):
@@ -580,15 +600,7 @@ def metrics() -> Response:
 @app.get("/api/overview")
 def overview(request: Request) -> dict:
     try:
-        snapshot = collector.snapshot()
-        if request.state.user.get("role") == "readonly":
-            snapshot["logs"] = {}
-            snapshot["structured_logs"] = {}
-            snapshot["incident_evidence"] = []
-            snapshot["analysis"] = {
-                pod["name"]: {"severity": "healthy", "counts": {"errors": 0, "warnings": 0, "oom_events": 0}, "findings": ["Log-level evidence is available to Developer / Operator and Administrator accounts."]}
-                for pod in snapshot.get("pods", [])
-            }
+        snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
         snapshot["alert_acknowledgements"] = _read_alert_acknowledgements()
         return snapshot
     except ClusterConnectionError as error:
@@ -764,7 +776,7 @@ def acknowledge_alert(update: AlertAcknowledgementUpdate, request: Request) -> d
 @app.post("/api/assistant")
 def operations_assistant(question: AssistantQuestion, request: Request) -> dict:
     try:
-        snapshot = collector.snapshot()
+        snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
     except ClusterConnectionError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     result = answer_operations_question(snapshot, question.question, question.current_pod)

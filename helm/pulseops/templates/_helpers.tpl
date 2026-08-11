@@ -39,3 +39,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "pulseops.monitoredNamespace" -}}
 {{- default .Release.Namespace .Values.monitoring.namespace }}
 {{- end }}
+
+{{- define "pulseops.authSecretName" -}}
+{{- default (printf "%s-auth" (include "pulseops.fullname" .)) .Values.auth.existingSecret }}
+{{- end }}
