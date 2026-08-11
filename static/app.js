@@ -37,10 +37,13 @@ let prometheusTokenConfigured = false;
 let prometheusSettingsStatus = '';
 let observabilityData = { samples: [], events: [], capacity: [], dependencies: [], service_map: { nodes: [], edges: [] } };
 let observabilityMinutes = 60;
+let trendMode = 'capacity';
+let investigationPodName = '';
 let selectedDeploymentName;
 let selectedDeploymentResource;
 let podSearch = '';
 let podFilter = 'all';
+let podSort = 'attention';
 let podPage = 1;
 let podPageSize = 25;
 let deploymentSearch = '';
@@ -51,6 +54,21 @@ let deploymentPageSize = 25;
 let selectedAccessUserEmail = '';
 let acknowledgedAlerts = {};
 let alertHistory = [];
+let sourceHealth = { status: 'checking', collector: {} };
+
+const workloadViewsKey = 'l1controlscope-workload-views';
+function savedWorkloadViews() {
+  try { return JSON.parse(localStorage.getItem(workloadViewsKey) || '[]'); } catch { return []; }
+}
+function saveWorkloadView() {
+  const name = window.prompt('Name this workload view');
+  if (!name?.trim()) return;
+  const view = { name: name.trim().slice(0, 60), filter: deploymentFilter, sort: deploymentSort, page_size: deploymentPageSize };
+  const views = savedWorkloadViews().filter(item => item.name !== view.name);
+  views.push(view);
+  localStorage.setItem(workloadViewsKey, JSON.stringify(views.slice(-12)));
+  renderWorkloads(data?.inventory);
+}
 
 const percent = value => `${Number(value).toFixed(0)}%`;
 const severityClass = value => `status ${value}`;
@@ -132,6 +150,15 @@ function renderDataSources() {
   if (!target) return;
   const windows = [[15, '15 minutes'], [60, '60 minutes'], [120, '2 hours'], [480, '8 hours'], [2880, '2 days'], [11520, '8 days'], [21600, '15 days'], [43200, '1 month']];
   target.innerHTML = `<article class="data-source-card"><span class="status healthy">Optional</span><h3>Kubernetes / OpenShift</h3><p>Preferred source for current pods, deployments, Services, CPU, memory, and restart counts. Requires platform-provided read-only access.</p><p class="source-status">PulseOps automatically uses this source when its monitoring identity has permission.</p></article><article class="data-source-card"><span class="status ${splunkSettings.enabled ? 'healthy' : 'warning'}">${splunkSettings.enabled ? 'Configured' : 'Not configured'}</span><h3>Splunk</h3><p>External workload evidence and all logs for the selected application scope. The token stays in a Secret.</p><label><input id="splunk-enabled" type="checkbox" ${splunkSettings.enabled ? 'checked' : ''}> Enable Splunk source</label><label>Management URL<input id="splunk-base-url" value="${escapeHtml(splunkSettings.base_url)}" placeholder="https://splunk.company.example:8089"></label><label>Index<input id="splunk-index" value="${escapeHtml(splunkSettings.index)}"></label><label>Application scope field<input id="splunk-scope-field" value="${escapeHtml(splunkSettings.scope_field || 'kubernetes.namespace')}"></label><label>Application scope value<input id="splunk-scope-value" value="${escapeHtml(splunkSettings.scope_value || '')}" placeholder="mindspark-official"></label><label>Search window<select id="splunk-lookback">${windows.map(([value, label]) => `<option value="${value}" ${Number(splunkSettings.lookback_minutes) === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><div class="source-actions"><button class="primary" data-splunk-save>Save Splunk</button><button data-splunk-test>Test connection</button></div><p class="source-status">${escapeHtml(splunkSettingsStatus || (splunkTokenConfigured ? 'API token is securely configured. Pod-field mapping is managed internally.' : 'SPLUNK_API_TOKEN and SPLUNK_ALLOWED_HOSTS must be provided by an administrator.'))}</p></article><article class="data-source-card"><span class="status ${prometheusSettings.enabled ? 'healthy' : 'warning'}">${prometheusSettings.enabled ? 'Configured' : 'Disabled'}</span><h3>Prometheus</h3><p>Numeric CPU, memory, restart, and availability history for forecasting. Any token remains in a Secret.</p><label><input id="prometheus-enabled" type="checkbox" ${prometheusSettings.enabled ? 'checked' : ''}> Enable Prometheus source</label><label>Prometheus URL<input id="prometheus-base-url" value="${escapeHtml(prometheusSettings.base_url)}" placeholder="https://prometheus.company.example"></label><div class="source-actions"><button class="primary" data-prometheus-save>Save Prometheus</button><button data-prometheus-test>Test connection</button></div><p class="source-status">${escapeHtml(prometheusSettingsStatus || (prometheusTokenConfigured ? 'API token is securely configured.' : 'PROMETHEUS_ALLOWED_HOSTS must be provided by an administrator. Add PROMETHEUS_API_TOKEN only when your endpoint requires it.'))}</p></article>`;
+  const collector = sourceHealth.collector || {};
+  const runtimeSource = data?.mode === 'docker' ? 'Local Docker' : data?.mode === 'splunk' ? 'Splunk' : data?.mode === 'kubernetes' ? 'Kubernetes / OpenShift' : 'Waiting for telemetry';
+  const readiness = sourceHealth.status === 'ready';
+  const sourceCards = [
+    ['Live telemetry', runtimeSource, readiness ? 'healthy' : 'warning', readiness ? `Current · updated ${collector.age_seconds ?? '—'}s ago` : 'Telemetry is not ready.'],
+    ['Prometheus', prometheusSettings.enabled ? 'Enabled' : 'Disabled', prometheusSettings.enabled ? 'healthy' : 'warning', prometheusSettings.enabled ? 'Trends and forecasts available.' : 'Forecast history unavailable.'],
+    ['Splunk fallback', splunkSettings.enabled ? 'Enabled' : 'Not enabled', splunkSettings.enabled && splunkTokenConfigured ? 'healthy' : 'warning', splunkSettings.enabled ? (splunkTokenConfigured ? 'Fallback logs ready.' : 'Token still required.') : 'Optional log fallback.'],
+  ];
+  target.insertAdjacentHTML('afterbegin', `<section class="source-health-board"><div><p class="eyebrow">SOURCE STATUS</p><h3>Evidence available to this dashboard</h3><p>Use the configuration cards below only when a connection needs to be changed or tested.</p></div><div class="source-health-items">${sourceCards.map(([label, value, status, detail]) => `<article class="source-health-item"><span class="${severityClass(status)}">${escapeHtml(status === 'healthy' ? 'available' : 'attention')}</span><strong>${escapeHtml(label)}</strong><b>${escapeHtml(value)}</b><small>${escapeHtml(detail)}</small></article>`).join('')}</div></section>`);
   target.querySelector('[data-splunk-save]').addEventListener('click', saveSplunkSettings);
   target.querySelector('[data-splunk-test]').addEventListener('click', testSplunkSettings);
   target.querySelector('[data-prometheus-save]').addEventListener('click', savePrometheusSettings);
@@ -258,6 +285,18 @@ function renderSummary(summary) {
   }));
 }
 
+function renderPlatformHealth(summary, alerts) {
+  const target = document.querySelector('#platform-health');
+  const critical = (alerts || []).filter(item => item.severity === 'critical').length;
+  const warning = (alerts || []).filter(item => item.severity === 'warning').length;
+  const unhealthyPods = Math.max(0, Number(summary.pods || 0) - Number(summary.healthy_pods || 0));
+  const status = critical ? 'critical' : warning || unhealthyPods ? 'warning' : 'healthy';
+  const headline = critical ? 'Immediate attention is required' : warning || unhealthyPods ? 'Attention items need review' : 'Platform is operating normally';
+  const detail = critical ? `${critical} critical alert${critical === 1 ? '' : 's'} detected.` : warning ? `${warning} warning alert${warning === 1 ? '' : 's'} and ${unhealthyPods} workload${unhealthyPods === 1 ? '' : 's'} need review.` : `${summary.healthy_pods}/${summary.pods} pods healthy · no active critical signal.`;
+  target.innerHTML = `<div class="platform-health-copy"><span class="${severityClass(status)}">${status === 'healthy' ? 'Healthy' : status === 'warning' ? 'Attention' : 'Critical'}</span><div><strong>${headline}</strong><small>${detail}</small></div></div><button type="button" data-platform-health-action>${status === 'healthy' ? 'Open operations' : 'Review attention'}</button>`;
+  target.querySelector('[data-platform-health-action]').addEventListener('click', () => { const id = status === 'healthy' ? 'observability-center' : 'alert-center'; window.history.replaceState(null, '', `#${id}`); setWorkspacePage(pageFromTarget(id)); document.querySelector(`#${id}`).scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+}
+
 function renderOverviewFocus(overview, report) {
   const capacity = report?.capacity || [];
   const events = report?.events || [];
@@ -277,11 +316,24 @@ function renderOverviewFocus(overview, report) {
   }));
 }
 
-function svgSeries(samples, selector, color, width = 760, height = 188) {
+function svgSeries(samples, selector, color, width = 760, height = 188, maximum = null, label = 'Value', suffix = '%') {
   const values = samples.map(selector).map(value => Number(value) || 0);
   if (values.length < 2) return '';
-  const max = Math.max(...values, 1);
-  return `<polyline fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${values.map((value, index) => `${14 + index / (values.length - 1) * (width - 28)},${height - 18 - value / max * (height - 36)}`).join(' ')}"/>`;
+  const max = maximum ?? Math.max(...values, 1);
+  const points = values.map((value, index) => `${14 + index / (values.length - 1) * (width - 28)},${height - 18 - value / max * (height - 36)}`);
+  const fill = color === '#416ce4' ? 'rgba(65,108,228,.14)' : color === '#845bd4' ? 'rgba(132,91,212,.12)' : 'rgba(210,103,81,.14)';
+  const markers = points.map((point, index) => { const [x, y] = point.split(','); const timestamp = new Date(samples[index].timestamp * 1000).toLocaleTimeString(); return `<circle class="trend-hit" cx="${x}" cy="${y}" r="7"><title>${escapeHtml(`${timestamp} · ${label}: ${values[index]}${suffix}`)}</title></circle>`; }).join('');
+  const [lastX, lastY] = points.at(-1).split(',');
+  return `<polygon points="14,${height - 18} ${points.join(' ')} ${width - 14},${height - 18}" fill="${fill}"/><polyline fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${points.join(' ')}"/>${markers}<circle class="trend-current" cx="${lastX}" cy="${lastY}" r="4" fill="${color}"><title>${escapeHtml(`Now · ${label}: ${values.at(-1)}${suffix}`)}</title></circle>`;
+}
+
+function trendInsight(samples, selector, label, suffix = '%') {
+  const values = samples.map(selector).map(value => Number(value) || 0).slice(-6);
+  const current = values.at(-1) || 0;
+  const first = values[0] ?? current;
+  const tolerance = suffix === '%' ? 2 : 1;
+  const direction = current - first > tolerance ? 'Rising' : first - current > tolerance ? 'Falling' : 'Stable';
+  return `<article class="trend-kpi"><span>${escapeHtml(label)}</span><strong>${suffix === '%' ? percent(current) : `${current} ${suffix}`}</strong><small class="${direction === 'Rising' ? 'rising' : direction === 'Falling' ? 'falling' : ''}">${direction} across recent readings</small></article>`;
 }
 
 function renderObservability(report) {
@@ -290,10 +342,22 @@ function renderObservability(report) {
   document.querySelector('#trend-note').textContent = samples.length ? `${samples.length} live readings · last ${report.range_minutes} minutes` : 'Collecting live history';
   const ranges = [[15, '15m'], [60, '1h'], [360, '6h'], [1440, '24h']];
   const rangeControls = `<div class="trend-range-controls" aria-label="Trend time range">${ranges.map(([minutes, label]) => `<button type="button" data-trend-range="${minutes}" class="${observabilityMinutes === minutes ? 'active' : ''}">${label}</button>`).join('')}</div>`;
+  const modeControls = `<div class="trend-mode-controls" aria-label="Trend metric group"><button type="button" data-trend-mode="capacity" class="${trendMode === 'capacity' ? 'active' : ''}">Capacity</button><button type="button" data-trend-mode="events" class="${trendMode === 'events' ? 'active' : ''}">Error events</button></div>`;
+  const capacityView = trendMode === 'capacity';
+  const eventMaximum = Math.max(...samples.map(item => Number(item.summary?.errors) || 0), 1);
+  const trendLegend = capacityView ? '<div class="trend-legend"><span class="cpu">CPU usage</span><span class="memory">Memory usage</span><small>Percentage of container limits</small></div>' : `<div class="trend-legend"><span class="errors">Log errors</span><small>Events per observation · peak ${eventMaximum}</small></div>`;
+  const trendLines = capacityView
+    ? `${svgSeries(samples, item => item.summary.cpu, '#416ce4', 760, 188, 100, 'CPU', '%')}${svgSeries(samples, item => item.summary.memory, '#845bd4', 760, 188, 100, 'Memory', '%')}`
+    : svgSeries(samples, item => item.summary.errors, '#d26751', 760, 188, eventMaximum, 'Errors', ' events');
+  const trendSummary = capacityView ? 'Capacity view keeps CPU and memory on the same percentage scale.' : 'Event view isolates log-error volume so it is never confused with percentage metrics.';
+  const trendKpis = capacityView
+    ? `<div class="trend-kpis">${trendInsight(samples, item => item.summary.cpu, 'CPU now')}${trendInsight(samples, item => item.summary.memory, 'Memory now')}</div>`
+    : `<div class="trend-kpis">${trendInsight(samples, item => item.summary.errors, 'Errors now', 'events')}</div>`;
   document.querySelector('#operations-trends').innerHTML = samples.length > 1
-    ? `${rangeControls}<div class="trend-legend"><span class="cpu">CPU</span><span class="memory">Memory</span><span class="errors">Log errors</span></div><svg viewBox="0 0 760 188" preserveAspectRatio="none"><line class="trend-grid" x1="14" x2="746" y1="28" y2="28"/><line class="trend-grid" x1="14" x2="746" y1="94" y2="94"/><line class="trend-grid" x1="14" x2="746" y1="170" y2="170"/>${svgSeries(samples, item => item.summary.cpu, '#416ce4')}${svgSeries(samples, item => item.summary.memory, '#845bd4')}${svgSeries(samples, item => item.summary.errors, '#d26751')}</svg><div class="trend-axis"><span>${new Date(samples[0].timestamp * 1000).toLocaleTimeString()}</span><span>Now</span></div>`
-    : `${rangeControls}<p class="empty">Collecting at least two live readings to draw operational trends.</p>`;
+    ? `<div class="trend-toolbar">${modeControls}${rangeControls}</div>${trendLegend}${trendKpis}<div class="trend-canvas"><svg viewBox="0 0 760 188" preserveAspectRatio="none"><line class="trend-grid" x1="14" x2="746" y1="28" y2="28"/><line class="trend-grid" x1="14" x2="746" y1="94" y2="94"/><line class="trend-grid" x1="14" x2="746" y1="170" y2="170"/>${trendLines}</svg></div><div class="trend-axis"><span>${new Date(samples[0].timestamp * 1000).toLocaleTimeString()}</span><span>${capacityView ? '0–100%' : `0–${eventMaximum} events`}</span><span>Now</span></div><p class="trend-summary">${trendSummary}</p>`
+    : `${modeControls}${rangeControls}<p class="empty">Collecting at least two live readings to draw operational trends.</p>`;
   document.querySelectorAll('[data-trend-range]').forEach(button => button.addEventListener('click', () => { observabilityMinutes = Number(button.dataset.trendRange); load(); }));
+  document.querySelectorAll('[data-trend-mode]').forEach(button => button.addEventListener('click', () => { trendMode = button.dataset.trendMode; renderObservability(observabilityData); }));
   const slo = report?.slo || {};
   document.querySelector('#slo-health').innerHTML = `<div class="slo-score"><span class="${severityClass(slo.status || 'healthy')}">${escapeHtml(slo.status || 'healthy')}</span><strong>${Number(slo.availability_percent || 0).toFixed(1)}%</strong><p>Availability target: ${slo.target_percent || 99.5}%</p><div class="slo-meta"><span>${slo.error_pods || 0} error workloads</span><span>${slo.restart_events || 0} restart events</span></div><p>${escapeHtml(slo.note || '')}</p></div>`;
   const capacity = report?.capacity || [];
@@ -324,12 +388,57 @@ function renderObservability(report) {
   document.querySelectorAll('[data-event-pod]').forEach(button => button.addEventListener('click', () => { if (button.dataset.eventPod) openPodInvestigation(button.dataset.eventPod); }));
 }
 
-function openPodInvestigation(name) {
-  if (!data?.pods?.some(pod => pod.name === name)) return;
+function closeInvestigationDrawer() {
+  investigationPodName = '';
+  document.body.classList.remove('investigation-drawer-open');
+  document.querySelector('#investigation-drawer').setAttribute('aria-hidden', 'true');
+  document.querySelector('#investigation-backdrop').hidden = true;
+}
+
+function openInvestigationDetails(name) {
+  closeInvestigationDrawer();
   window.history.replaceState(null, '', '#container-monitoring');
   setWorkspacePage('workloads');
   selectPod(name);
   document.querySelector('.detail-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderInvestigationDrawer(name) {
+  const pod = data?.pods?.find(item => item.name === name);
+  if (!pod) return closeInvestigationDrawer();
+  const analysis = data.analysis?.[name] || { severity: 'healthy', counts: { errors: 0, warnings: 0, oom_events: 0 }, findings: [] };
+  const forecast = data.forecasts?.find(item => item.pod === name);
+  const alerts = (data.alerts || []).filter(item => item.pod === name);
+  const events = (observabilityData.events || []).filter(item => item.pod === name).slice(0, 3);
+  const evidence = (data.incident_evidence || []).filter(item => item.pod === name).slice(0, 1);
+  const deployment = (data.deployments || []).find(item => (item.resources || []).some(resource => resource.pod?.name === name));
+  const health = pod.risk === 'critical' ? 'critical' : analysis.severity === 'warning' || pod.risk === 'warning' ? 'warning' : 'healthy';
+  document.querySelector('#investigation-title').textContent = pod.name;
+  document.querySelector('#investigation-subtitle').textContent = `${pod.namespace || 'default'} · ${pod.node || 'runtime'} · live workload context`;
+  document.querySelector('#investigation-content').innerHTML = `
+    <div class="investigation-state"><span class="${severityClass(health)}">${escapeHtml(pod.status)}</span><p>${escapeHtml(analysis.findings?.[0] || 'No critical pattern found in the live telemetry sample.')}</p></div>
+    <section class="investigation-metrics"><article><span>Memory</span><strong>${pod.memory_mib} MiB</strong><small>${percent(pod.memory_percent)} of limit</small></article><article><span>CPU</span><strong>${percent(pod.cpu_percent)}</strong><small>${pod.cpu_millicores} millicores</small></article><article><span>Restarts</span><strong>${pod.restarts}</strong><small>since start</small></article><article><span>Log errors</span><strong>${analysis.counts.errors}</strong><small>${analysis.counts.warnings} warnings</small></article></section>
+    <section class="investigation-section"><p class="eyebrow">RELATED WORKLOAD</p><strong>${escapeHtml(deployment?.name || 'No deployment mapping')}</strong><small>${escapeHtml(pod.image || 'Image unavailable')}</small></section>
+    <section class="investigation-section"><p class="eyebrow">RECENT CHANGES</p>${events.length ? `<ul>${events.map(event => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || 'Live monitoring event')}</span></li>`).join('')}</ul>` : '<p class="muted">No restart, deployment, or alert transition in the selected window.</p>'}</section>
+    <section class="investigation-section"><p class="eyebrow">EVIDENCE</p><div class="investigation-evidence"><span>${alerts.length} active alert${alerts.length === 1 ? '' : 's'}</span><span>${evidence.length ? 'Pre-restart snapshot captured' : 'No captured incident snapshot'}</span><span>${forecast ? `${percent(forecast.forecast_percent ?? forecast.current_percent)} memory outlook` : 'No memory forecast yet'}</span></div></section>
+    <div class="investigation-actions"><button type="button" data-investigation-details="${escapeHtml(name)}">Open full details</button>${isDeveloperOrAdministrator() ? `<button type="button" data-investigation-logs="${escapeHtml(name)}">Open logs</button>` : ''}<button type="button" data-investigation-alerts="${escapeHtml(name)}">View alerts</button></div>`;
+  document.querySelector('[data-investigation-details]').addEventListener('click', () => openInvestigationDetails(name));
+  document.querySelector('[data-investigation-logs]')?.addEventListener('click', () => {
+    closeInvestigationDrawer(); logExplorerPodName = name; logExplorerLevel = 'all'; logExplorerSearch = ''; setWorkspacePage('logs'); renderLogExplorer(); document.querySelector('#log-explorer-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  document.querySelector('[data-investigation-alerts]').addEventListener('click', () => {
+    closeInvestigationDrawer(); window.history.replaceState(null, '', '#alert-center'); setWorkspacePage('alerts'); document.querySelector('#alert-center').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+function openPodInvestigation(name) {
+  if (!data?.pods?.some(pod => pod.name === name)) return;
+  investigationPodName = name;
+  selectPod(name);
+  renderInvestigationDrawer(name);
+  document.body.classList.add('investigation-drawer-open');
+  document.querySelector('#investigation-drawer').setAttribute('aria-hidden', 'false');
+  document.querySelector('#investigation-backdrop').hidden = false;
 }
 
 function renderIncidentWorkspaces() {
@@ -377,7 +486,8 @@ function renderWorkloads(inventory) {
   deploymentPage = Math.min(deploymentPage, pages);
   const start = (deploymentPage - 1) * deploymentPageSize;
   const visible = matching.slice(start, start + deploymentPageSize);
-  document.querySelector('#deployment-list-controls').innerHTML = `<div class="inventory-filters"><label>Find deployment <input id="deployment-search" value="${escapeHtml(deploymentSearch)}" placeholder="Name, type, or image"></label><button type="button" data-deployment-search>Search</button><label>Show <select id="deployment-filter"><option value="all" ${deploymentFilter === 'all' ? 'selected' : ''}>All deployments</option><option value="attention" ${deploymentFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="ready" ${deploymentFilter === 'ready' ? 'selected' : ''}>Ready</option><option value="exposed" ${deploymentFilter === 'exposed' ? 'selected' : ''}>Exposed</option><option value="completed" ${deploymentFilter === 'completed' ? 'selected' : ''}>Completed</option></select></label><label>Order <select id="deployment-sort"><option value="attention" ${deploymentSort === 'attention' ? 'selected' : ''}>Needs attention first</option><option value="name" ${deploymentSort === 'name' ? 'selected' : ''}>Name A–Z</option></select></label></div><div class="inventory-pagination"><span>${matching.length ? `Showing ${start + 1}–${Math.min(start + deploymentPageSize, matching.length)} of ${matching.length}` : 'No matching deployments'} · ${workloads.length} total</span><label>Rows <select id="deployment-page-size"><option value="25" ${deploymentPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${deploymentPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${deploymentPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-deployment-prev ${deploymentPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${deploymentPage} of ${pages}</span><button type="button" data-deployment-next ${deploymentPage === pages ? 'disabled' : ''}>Next</button></div>`;
+  const views = savedWorkloadViews();
+  document.querySelector('#deployment-list-controls').innerHTML = `<div class="inventory-filters"><label>Find deployment <input id="deployment-search" value="${escapeHtml(deploymentSearch)}" placeholder="Name, type, or image"></label><button type="button" data-deployment-search>Search</button><label>Show <select id="deployment-filter"><option value="all" ${deploymentFilter === 'all' ? 'selected' : ''}>All deployments</option><option value="attention" ${deploymentFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="ready" ${deploymentFilter === 'ready' ? 'selected' : ''}>Ready</option><option value="exposed" ${deploymentFilter === 'exposed' ? 'selected' : ''}>Exposed</option><option value="completed" ${deploymentFilter === 'completed' ? 'selected' : ''}>Completed</option></select></label><label>Order <select id="deployment-sort"><option value="attention" ${deploymentSort === 'attention' ? 'selected' : ''}>Needs attention first</option><option value="name" ${deploymentSort === 'name' ? 'selected' : ''}>Name A–Z</option></select></label><label>Saved view <select id="deployment-view"><option value="">Choose a view</option>${views.map((view, index) => `<option value="${index}">${escapeHtml(view.name)}</option>`).join('')}</select></label><button type="button" data-deployment-view-save>Save view</button></div><div class="inventory-pagination"><span>${matching.length ? `Showing ${start + 1}–${Math.min(start + deploymentPageSize, matching.length)} of ${matching.length}` : 'No matching deployments'} · ${workloads.length} total</span><label>Rows <select id="deployment-page-size"><option value="25" ${deploymentPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${deploymentPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${deploymentPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-deployment-prev ${deploymentPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${deploymentPage} of ${pages}</span><button type="button" data-deployment-next ${deploymentPage === pages ? 'disabled' : ''}>Next</button></div>`;
   const changed = new Set((observabilityData.events || []).filter(event => event.kind === 'deployment').map(event => event.pod));
   target.innerHTML = visible.length ? visible.map(workload => `<tr><td><button class="deployment-link" data-deployment-open="${escapeHtml(workload.name)}">${escapeHtml(workload.name)}<small>${changed.has(workload.name) ? 'Changed recently · inspect →' : 'Inspect resources →'}</small></button></td><td>${escapeHtml(workload.type)}</td><td>${workload.available}/${workload.desired} available</td><td><small>${escapeHtml(workload.image || 'Not available')}</small></td><td>${workload.exposed ? 'Exposed' : 'Internal'}</td><td><span class="${severityClass(workload.status === 'Ready' || workload.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(workload.status)}</span></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No deployments match the selected filter.</td></tr>';
   document.querySelectorAll('[data-deployment-open]').forEach(button => button.addEventListener('click', () => { selectedDeploymentName = button.dataset.deploymentOpen; selectedDeploymentResource = undefined; renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
@@ -388,6 +498,8 @@ function renderWorkloads(inventory) {
   document.querySelector('#deployment-search').addEventListener('keypress', event => { if (event.key === 'Enter') document.querySelector('[data-deployment-search]').click(); });
   document.querySelector('#deployment-filter').addEventListener('change', event => { deploymentFilter = event.target.value; deploymentPage = 1; renderWorkloads(inventory); });
   document.querySelector('#deployment-sort').addEventListener('change', event => { deploymentSort = event.target.value; deploymentPage = 1; renderWorkloads(inventory); });
+  document.querySelector('#deployment-view').addEventListener('change', event => { const view = views[Number(event.target.value)]; if (!view) return; deploymentFilter = view.filter || 'all'; deploymentSort = view.sort || 'attention'; deploymentPageSize = Number(view.page_size) || 25; deploymentPage = 1; renderWorkloads(inventory); });
+  document.querySelector('[data-deployment-view-save]').addEventListener('click', saveWorkloadView);
   document.querySelector('#deployment-page-size').addEventListener('change', event => { deploymentPageSize = Number(event.target.value); deploymentPage = 1; renderWorkloads(inventory); });
   document.querySelector('[data-deployment-prev]').addEventListener('click', () => { deploymentPage -= 1; renderWorkloads(inventory); });
   document.querySelector('[data-deployment-next]').addEventListener('click', () => { deploymentPage += 1; renderWorkloads(inventory); });
@@ -415,12 +527,29 @@ function renderDeploymentInspector(deployments) {
   const memoryPercent = summary.memory_limit_mib ? Math.min(100, summary.memory_mib / summary.memory_limit_mib * 100) : 0;
   const changeHtml = changes.length ? changes.map(event => `<li><strong>${escapeHtml(event.title)}</strong><small>${new Date(event.timestamp * 1000).toLocaleString()} · ${escapeHtml(event.detail || '')}</small></li>`).join('') : '<li><strong>No recent deployment change</strong><small>No image or readiness change was recorded in the selected observation window.</small></li>';
   target.innerHTML = `<div class="deployment-selector">${deployments.map(item => `<button class="${item.name === selected.name ? 'active' : ''}" data-deployment-select="${escapeHtml(item.name)}">${escapeHtml(item.name)}<small>${item.available}/${item.desired} ready</small></button>`).join('')}</div><div class="deployment-summary-grid"><div class="deployment-overview"><span class="${severityClass(selected.status === 'Ready' || selected.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(selected.status)}</span><h3>${escapeHtml(selected.name)}</h3><p>${escapeHtml(selected.type)} · ${escapeHtml(selected.image)}</p><div class="deployment-stat-grid"><span><b>${selected.available}/${selected.desired}</b> ready</span><span><b>${summary.resource_count}</b> resources</span><span><b>${summary.restarts}</b> restarts</span><span><b>${summary.cpu_percent}%</b> total CPU</span></div></div><div class="memory-donut-wrap"><div class="memory-donut" style="--memory:${memoryPercent}%"><strong>${memoryPercent.toFixed(0)}%</strong><small>memory used</small></div><p>${summary.memory_mib} MiB / ${summary.memory_limit_mib || '—'} MiB</p></div><div class="deployment-trend">${deploymentMemoryChart(selected.memory_history || [])}</div></div><section class="deployment-changes"><div class="timeline-heading"><span>Recent deployment changes</span><small>Image and readiness changes from the current observation window</small></div><ul>${changeHtml}</ul></section><div class="deployment-resource-grid"><section class="deployment-resource-list"><div class="timeline-heading"><span>Resources</span><small>Click one for details</small></div>${resources.length ? resources.map(item => `<button class="deployment-resource ${item.pod.name === selectedDeploymentResource ? 'active' : ''}" data-resource-select="${escapeHtml(item.pod.name)}"><span class="${severityClass(item.pod.risk)}">${escapeHtml(item.pod.status)}</span><strong>${escapeHtml(item.pod.name)}</strong><small>CPU ${percent(item.pod.cpu_percent)} · Memory ${percent(item.pod.memory_percent)} · Restarts ${item.pod.restarts}</small></button>`).join('') : '<p class="empty">No matching resource was found for this deployment.</p>'}</section><section class="deployment-resource-detail">${resource ? `<p class="eyebrow">SELECTED RESOURCE</p><h3>${escapeHtml(resource.pod.name)}</h3><div class="detail-grid"><div class="detail-metric"><span>CPU</span><strong>${percent(resource.pod.cpu_percent)}</strong><small>${resource.pod.cpu_millicores} millicores</small></div><div class="detail-metric"><span>Memory</span><strong>${resource.pod.memory_mib} MiB</strong><small>${percent(resource.pod.memory_percent)} of limit</small></div><div class="detail-metric"><span>Forecast</span><strong>${resource.forecast.forecast_percent ?? resource.pod.memory_percent}%</strong><small>15-minute projected memory</small></div><div class="detail-metric"><span>Signals</span><strong>${resource.analysis.counts?.errors || 0}</strong><small>Current log errors</small></div></div><p class="helper">${escapeHtml(resource.analysis.findings?.[0] || 'No critical signal in the current log sample.')}</p><button class="open-resource-detail" data-open-pod="${escapeHtml(resource.pod.name)}">Open full pod investigation</button>` : '<p class="empty">Select a resource to inspect it.</p>'}</section></div>`;
+  const evidenceCount = (data?.incident_evidence || []).filter(item => resources.some(resourceItem => resourceItem.pod.name === item.pod)).length;
+  target.querySelector('.deployment-changes')?.insertAdjacentHTML('beforebegin', `<section class="deployment-impact-map"><button class="impact-node"><small>WORKLOAD</small><strong>${escapeHtml(selected.name)}</strong><small>${escapeHtml(selected.type)}</small></button><button class="impact-node"><small>SERVICE</small><strong>${selected.exposed ? 'Exposed service' : 'Internal service'}</strong><small>${selected.exposed ? 'Reachable outside cluster' : 'Cluster-only access'}</small></button><button class="impact-node actionable" data-impact-resource><small>PODS / CONTAINERS</small><strong>${summary.resource_count || 0} monitored</strong><small>${selected.available}/${selected.desired} ready</small></button><button class="impact-node actionable" data-impact-logs><small>LIVE LOGS</small><strong>${resource?.analysis?.counts?.errors || 0} errors</strong><small>Open current pod context</small></button><button class="impact-node actionable" data-impact-evidence><small>INCIDENT EVIDENCE</small><strong>${evidenceCount} captures</strong><small>Restart and failure snapshots</small></button></section>`);
   const selector = target.querySelector('.deployment-selector');
   selector.innerHTML = `<label>Choose deployment <select id="deployment-select">${[...deployments].sort((left, right) => left.name.localeCompare(right.name)).map(item => `<option value="${escapeHtml(item.name)}" ${item.name === selected.name ? 'selected' : ''}>${escapeHtml(item.name)} · ${escapeHtml(item.status)}</option>`).join('')}</select></label><span>${deployments.length} deployments available</span>`;
   selector.querySelector('#deployment-select').addEventListener('change', event => { selectedDeploymentName = event.target.value; selectedDeploymentResource = undefined; renderDeploymentInspector(deployments); });
   target.querySelectorAll('[data-deployment-select]').forEach(button => button.addEventListener('click', () => { selectedDeploymentName = button.dataset.deploymentSelect; selectedDeploymentResource = undefined; renderDeploymentInspector(deployments); }));
   target.querySelectorAll('[data-resource-select]').forEach(button => button.addEventListener('click', () => { selectedDeploymentResource = button.dataset.resourceSelect; renderDeploymentInspector(deployments); openPodInvestigation(button.dataset.resourceSelect); }));
   target.querySelector('[data-open-pod]')?.addEventListener('click', () => openPodInvestigation(target.querySelector('[data-open-pod]').dataset.openPod));
+  target.querySelector('[data-impact-resource]')?.addEventListener('click', () => { if (resource?.pod?.name) openPodInvestigation(resource.pod.name); });
+  target.querySelector('[data-impact-logs]')?.addEventListener('click', () => {
+    if (!resource?.pod?.name) return;
+    logExplorerPodName = resource.pod.name;
+    logExplorerSelectedIndex = undefined;
+    window.history.replaceState(null, '', '#log-explorer-panel');
+    setWorkspacePage('logs');
+    renderLogExplorer();
+    document.querySelector('#log-explorer-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  target.querySelector('[data-impact-evidence]')?.addEventListener('click', () => {
+    window.history.replaceState(null, '', '#alert-center');
+    setWorkspacePage('alerts');
+    document.querySelector('.incident-evidence-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function savedLogQueries() {
@@ -555,23 +684,24 @@ function renderPods(pods) {
     const needsAttention = pod.risk !== 'healthy' || String(pod.status).toLowerCase() !== 'running';
     const matchesFilter = podFilter === 'all' || podFilter === 'attention' && needsAttention || podFilter === 'running' && String(pod.status).toLowerCase() === 'running';
     return matchesSearch && matchesFilter;
-  }).sort((left, right) => severityRank[right.risk] - severityRank[left.risk] || left.name.localeCompare(right.name));
+  }).sort((left, right) => podSort === 'name' ? left.name.localeCompare(right.name) : podSort === 'memory' ? Number(right.memory_percent) - Number(left.memory_percent) : podSort === 'restarts' ? Number(right.restarts) - Number(left.restarts) : severityRank[right.risk] - severityRank[left.risk] || left.name.localeCompare(right.name));
   const pages = Math.max(1, Math.ceil(filtered.length / podPageSize));
   podPage = Math.min(podPage, pages);
   const start = (podPage - 1) * podPageSize;
   const visible = filtered.slice(start, start + podPageSize);
-  document.querySelector('#pod-inventory-controls').innerHTML = `<div class="inventory-filters"><label>Find pod <input id="pod-search" value="${escapeHtml(podSearch)}" placeholder="Name, namespace, or node"></label><button type="button" data-pod-search>Search</button><label>Show <select id="pod-filter"><option value="all" ${podFilter === 'all' ? 'selected' : ''}>All pods</option><option value="attention" ${podFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="running" ${podFilter === 'running' ? 'selected' : ''}>Running only</option></select></label></div><div class="inventory-pagination"><span>${filtered.length ? `Showing ${start + 1}–${Math.min(start + podPageSize, filtered.length)} of ${filtered.length}` : 'No matching pods'} · ${pods.length} total</span><label>Rows <select id="pod-page-size"><option value="25" ${podPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${podPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${podPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-pod-prev ${podPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${podPage} of ${pages}</span><button type="button" data-pod-next ${podPage === pages ? 'disabled' : ''}>Next</button></div>`;
+  document.querySelector('#pod-inventory-controls').innerHTML = `<div class="inventory-filters"><label>Find pod <input id="pod-search" value="${escapeHtml(podSearch)}" placeholder="Name, namespace, or node"></label><button type="button" data-pod-search>Search</button><label>Show <select id="pod-filter"><option value="all" ${podFilter === 'all' ? 'selected' : ''}>All pods</option><option value="attention" ${podFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="running" ${podFilter === 'running' ? 'selected' : ''}>Running only</option></select></label><label>Order <select id="pod-sort"><option value="attention" ${podSort === 'attention' ? 'selected' : ''}>Attention first</option><option value="memory" ${podSort === 'memory' ? 'selected' : ''}>Memory high to low</option><option value="restarts" ${podSort === 'restarts' ? 'selected' : ''}>Restarts high to low</option><option value="name" ${podSort === 'name' ? 'selected' : ''}>Name A–Z</option></select></label></div><div class="inventory-pagination"><span>${filtered.length ? `Showing ${start + 1}–${Math.min(start + podPageSize, filtered.length)} of ${filtered.length}` : 'No matching pods'} · ${pods.length} total</span><label>Rows <select id="pod-page-size"><option value="25" ${podPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${podPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${podPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-pod-prev ${podPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${podPage} of ${pages}</span><button type="button" data-pod-next ${podPage === pages ? 'disabled' : ''}>Next</button></div>`;
   document.querySelector('#pods').innerHTML = visible.length ? visible.map(pod => `<tr class="${selectedPodName === pod.name ? 'selected' : ''}">
     <td><button class="pod-link" data-pod="${escapeHtml(pod.name)}">${escapeHtml(pod.name)}</button><small>${escapeHtml(pod.namespace)}</small></td>
     <td><span class="${severityClass(pod.risk)}">${pod.status}</span></td>
     <td>${pod.cpu_millicores}m <div class="bar"><i style="width:${Math.min(100, pod.cpu_percent)}%"></i></div><small>${percent(pod.cpu_percent)} of limit</small></td>
     <td>${pod.memory_mib} MiB <div class="bar memory"><i style="width:${Math.min(100, pod.memory_percent)}%"></i></div><small>${percent(pod.memory_percent)} of limit</small></td>
     <td>${pod.restarts}</td><td>${escapeHtml(pod.node)}</td><td><button class="forecast-button" data-pod="${escapeHtml(pod.name)}">Inspect</button></td></tr>`).join('') : '<tr><td colspan="7" class="empty">No pods match the selected filter.</td></tr>';
-  document.querySelectorAll('[data-pod]').forEach(button => button.addEventListener('click', () => selectPod(button.dataset.pod)));
+  document.querySelectorAll('[data-pod]').forEach(button => button.addEventListener('click', () => openPodInvestigation(button.dataset.pod)));
   document.querySelector('[data-pod-search]').addEventListener('click', () => { podSearch = document.querySelector('#pod-search').value; podPage = 1; renderPods(pods); });
   document.querySelector('#pod-search').addEventListener('input', event => { podSearch = event.target.value; });
   document.querySelector('#pod-search').addEventListener('keypress', event => { if (event.key === 'Enter') document.querySelector('[data-pod-search]').click(); });
   document.querySelector('#pod-filter').addEventListener('change', event => { podFilter = event.target.value; podPage = 1; renderPods(pods); });
+  document.querySelector('#pod-sort').addEventListener('change', event => { podSort = event.target.value; podPage = 1; renderPods(pods); });
   document.querySelector('#pod-page-size').addEventListener('change', event => { podPageSize = Number(event.target.value); podPage = 1; renderPods(pods); });
   document.querySelector('[data-pod-prev]').addEventListener('click', () => { podPage -= 1; renderPods(pods); });
   document.querySelector('[data-pod-next]').addEventListener('click', () => { podPage += 1; renderPods(pods); });
@@ -590,6 +720,17 @@ function investigateAlert(alert) {
   document.querySelector('#log-explorer-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+function openAlertEvidencePath(alert) {
+  const deployment = (data?.deployments || []).find(item => (item.resources || []).some(resource => resource.pod?.name === alert.pod));
+  if (!deployment) { investigateAlert(alert); return; }
+  selectedDeploymentName = deployment.name;
+  selectedDeploymentResource = alert.pod;
+  window.history.replaceState(null, '', '#deployment-inspector');
+  setWorkspacePage('workloads');
+  renderDeploymentInspector(data.deployments || []);
+  document.querySelector('#deployment-inspector').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 async function updateAlertLifecycle(key, status, button) {
   button.disabled = true; button.textContent = 'Saving…';
   try {
@@ -606,8 +747,8 @@ function renderAlerts(alerts) {
   const delivery = '<p class="muted">Notification delivery is not connected. Alerts are evaluated and retained locally; connect an approved Teams or email destination before relying on external notifications.</p>';
   const groups = new Map();
   alerts.sort((a, b) => severityRank[b.severity] - severityRank[a.severity]).forEach(alert => { const list = groups.get(alert.pod) || []; list.push(alert); groups.set(alert.pod, list); });
-  target.innerHTML = `${groups.size ? [...groups.entries()].map(([pod, podAlerts]) => `<section class="alert-group"><div class="alert-group-heading"><div><strong>${escapeHtml(pod)}</strong><small>${podAlerts.length} active signal${podAlerts.length === 1 ? '' : 's'}</small></div><button type="button" data-alert-investigate-pod="${escapeHtml(pod)}">Investigate pod</button></div>${podAlerts.map(alert => { const key = alertKey(alert); const record = acknowledgedAlerts[key]; const state = record?.status || 'active'; const lifecycle = record ? `<small>${escapeHtml(state)} by ${escapeHtml(record.acknowledged_by)} · ${new Date(record.acknowledged_at).toLocaleString()}${record.note ? ` · ${escapeHtml(record.note)}` : ''}</small>` : '<small>Active and not yet acknowledged</small>'; const controls = isDeveloperOrAdministrator() ? `<div class="alert-actions"><button type="button" data-alert-investigate="${escapeHtml(key)}">Investigate</button>${state === 'investigating' ? '<span class="alert-acknowledged">Investigating</span>' : `<button type="button" data-alert-lifecycle="${escapeHtml(key)}" data-alert-status="investigating">Investigate</button>`}${state === 'acknowledged' ? '<span class="alert-acknowledged">Acknowledged</span>' : `<button type="button" data-alert-lifecycle="${escapeHtml(key)}" data-alert-status="acknowledged">Acknowledge</button>`}</div>` : '<span class="alert-acknowledged">View only</span>'; return `<div class="alert ${alert.severity} ${record ? 'acknowledged' : ''}"><span class="${severityClass(alert.severity)}">${escapeHtml(alert.severity)}</span><div><p>${escapeHtml(alert.message)}</p>${lifecycle}</div>${controls}</div>`; }).join('')}</section>`).join('') : '<p class="empty">No active alerts.</p>'}${delivery}`;
-  target.querySelectorAll('[data-alert-investigate-pod]').forEach(button => button.addEventListener('click', () => investigateAlert({ pod: button.dataset.alertInvestigatePod, severity: 'warning' })));
+  target.innerHTML = `${groups.size ? [...groups.entries()].map(([pod, podAlerts]) => `<section class="alert-group"><div class="alert-group-heading"><div><strong>${escapeHtml(pod)}</strong><small>${podAlerts.length} active signal${podAlerts.length === 1 ? '' : 's'}</small></div><button type="button" data-alert-investigate-pod="${escapeHtml(pod)}">Open evidence path</button></div>${podAlerts.map(alert => { const key = alertKey(alert); const record = acknowledgedAlerts[key]; const state = record?.status || 'active'; const lifecycle = record ? `<small>${escapeHtml(state)} by ${escapeHtml(record.acknowledged_by)} · ${new Date(record.acknowledged_at).toLocaleString()}${record.note ? ` · ${escapeHtml(record.note)}` : ''}</small>` : '<small>Active and not yet acknowledged</small>'; const controls = isDeveloperOrAdministrator() ? `<div class="alert-actions"><button type="button" data-alert-investigate="${escapeHtml(key)}">Open logs</button>${state === 'investigating' ? '<span class="alert-acknowledged">Investigating</span>' : `<button type="button" data-alert-lifecycle="${escapeHtml(key)}" data-alert-status="investigating">Investigate</button>`}${state === 'acknowledged' ? '<span class="alert-acknowledged">Acknowledged</span>' : `<button type="button" data-alert-lifecycle="${escapeHtml(key)}" data-alert-status="acknowledged">Acknowledge</button>`}</div>` : '<span class="alert-acknowledged">View only</span>'; return `<div class="alert ${alert.severity} ${record ? 'acknowledged' : ''}"><span class="${severityClass(alert.severity)}">${escapeHtml(alert.severity)}</span><div><p>${escapeHtml(alert.message)}</p>${lifecycle}</div>${controls}</div>`; }).join('')}</section>`).join('') : '<p class="empty">No active alerts.</p>'}${delivery}`;
+  target.querySelectorAll('[data-alert-investigate-pod]').forEach(button => button.addEventListener('click', () => openAlertEvidencePath({ pod: button.dataset.alertInvestigatePod, severity: 'warning' })));
   target.querySelectorAll('[data-alert-investigate]').forEach(button => button.addEventListener('click', () => { const alert = alerts.find(item => alertKey(item) === button.dataset.alertInvestigate); if (alert) investigateAlert(alert); }));
   target.querySelectorAll('[data-alert-lifecycle]').forEach(button => button.addEventListener('click', () => updateAlertLifecycle(button.dataset.alertLifecycle, button.dataset.alertStatus, button)));
 }
@@ -912,21 +1053,23 @@ function selectPod(name, resetTab = true) {
 
 async function load() {
   try {
-    const [response, historyResponse, alertHistoryResponse] = await Promise.all([fetch('/api/overview'), fetch(`/api/observability/history?minutes=${observabilityMinutes}`), fetch('/api/alert-history')]);
+    const [response, historyResponse, alertHistoryResponse, readinessResponse] = await Promise.all([fetch('/api/overview'), fetch(`/api/observability/history?minutes=${observabilityMinutes}`), fetch('/api/alert-history'), fetch('/ready')]);
     const payload = await response.json();
     const historyPayload = historyResponse.ok ? await historyResponse.json() : observabilityData;
     const alertHistoryPayload = alertHistoryResponse.ok ? await alertHistoryResponse.json() : { events: [] };
+    sourceHealth = await readinessResponse.json().catch(() => ({ status: 'checking', collector: {} }));
     if (!response.ok) throw new Error(payload.detail || 'Live telemetry is unavailable.');
     data = payload;
     acknowledgedAlerts = data.alert_acknowledgements || {};
     alertHistory = alertHistoryPayload.events || [];
-    renderSummary(data.summary); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertRules(data.alert_rules || []);
+    renderSummary(data.summary); renderPlatformHealth(data.summary, data.alerts); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertRules(data.alert_rules || []);
     document.querySelector('#mode').textContent = data.mode === 'docker' ? 'Local Docker connected' : data.mode === 'splunk' ? 'Splunk external source' : 'Kubernetes connected';
     const collectedAt = data.collector?.last_collected || data.generated_at;
     const ageSeconds = Math.max(0, Math.round((Date.now() - new Date(collectedAt).getTime()) / 1000));
     const freshness = ageSeconds < 15 ? `Collected ${ageSeconds}s ago` : `Last collected ${Math.round(ageSeconds / 60)}m ago`;
     document.querySelector('#updated').textContent = `${freshness} · auto-refreshes every 30 seconds`;
     document.querySelector('#header-updated').textContent = `${freshness} · auto-refresh 30s`;
+    document.body.classList.remove('data-refreshed'); requestAnimationFrame(() => document.body.classList.add('data-refreshed')); setTimeout(() => document.body.classList.remove('data-refreshed'), 900);
     if (!data.pods.length) throw new Error('No containers match the configured MindSpark prefix.');
     selectPod(data.pods.some(pod => pod.name === selectedPodName) ? selectedPodName : data.pods[0].name, false);
   } catch (error) {
@@ -964,7 +1107,21 @@ function applyTheme(theme) {
 
 applyTheme(localStorage.getItem('pulseops-theme') === 'dark' ? 'dark' : 'light');
 document.querySelector('#theme-toggle').addEventListener('click', () => applyTheme(document.body.dataset.theme === 'dark' ? 'light' : 'dark'));
+function applyDensity(density) {
+  const compact = density === 'compact';
+  document.body.dataset.density = compact ? 'compact' : 'comfortable';
+  const button = document.querySelector('#density-toggle');
+  button.textContent = compact ? 'Compact' : 'Comfortable';
+  button.title = compact ? 'Use comfortable density' : 'Use compact density';
+  button.setAttribute('aria-label', button.title);
+  localStorage.setItem('l1controlscope-density', compact ? 'compact' : 'comfortable');
+}
+applyDensity(localStorage.getItem('l1controlscope-density') === 'compact' ? 'compact' : 'comfortable');
+document.querySelector('#density-toggle').addEventListener('click', () => applyDensity(document.body.dataset.density === 'compact' ? 'comfortable' : 'compact'));
 document.querySelector('#assistant-launcher').addEventListener('click', () => setAssistantOpen(true));
+document.querySelector('#investigation-close').addEventListener('click', closeInvestigationDrawer);
+document.querySelector('#investigation-backdrop').addEventListener('click', closeInvestigationDrawer);
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && investigationPodName) closeInvestigationDrawer(); });
 document.querySelector('#assistant-runtime-open').addEventListener('click', () => {
   assistantRuntimeOpen = !assistantRuntimeOpen;
   renderAssistant();

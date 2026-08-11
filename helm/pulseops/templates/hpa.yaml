@@ -1,3 +1,6 @@
+{{- if and .Values.autoscaling.enabled .Values.persistence.enabled }}
+{{- fail "autoscaling cannot be enabled while local persistent state is stored on one PVC. Keep one replica, or move application state to a shared database before scaling." }}
+{{- end }}
 {{- if .Values.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

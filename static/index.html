@@ -6,6 +6,7 @@
     <title>L1ControlScope</title>
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="stylesheet" href="/static/enhancements.css">
+    <link rel="stylesheet" href="/static/rightsight-inspired.css">
     <style>
       .pulseops-workspace .assistant-panel { background:linear-gradient(110deg,#f9fbff 0%,#f3f6ff 52%,#faf8ff 100%); }.assistant { display:grid; gap:14px; }.assistant-suggestions { display:flex; flex-wrap:wrap; gap:8px; }.assistant-suggestions button { padding:8px 11px; border:1px solid #cfdafa; border-radius:999px; color:#3f5fb5; background:#fff; font-size:.74rem; font-weight:800; }.assistant-suggestions button:hover { border-color:#91a8ed; background:#eef3ff; }.assistant-chat { display:grid; max-height:350px; gap:10px; overflow:auto; padding:3px 2px; }.assistant-message { max-width:min(780px,94%); padding:12px 14px; border:1px solid #dde5f1; border-radius:12px; background:#fff; box-shadow:0 2px 7px rgba(31,51,87,.04); }.assistant-message.user { justify-self:end; border-color:#cbd8fd; background:#edf3ff; }.assistant-message span { display:block; margin-bottom:5px; color:#5570a6; font-size:.65rem; font-weight:900; letter-spacing:.09em; text-transform:uppercase; }.assistant-message.user span { color:#365ec8; }.assistant-message p { margin:0; color:#33415c; font-size:.81rem; line-height:1.65; }.assistant-form { display:grid; gap:7px; padding-top:4px; }.assistant-form>label { color:#52637e; font-size:.72rem; font-weight:800; }.assistant-form>div { display:flex; gap:8px; }.assistant-form input { min-width:0; flex:1; padding:11px 12px; border:1px solid #d5dfed; border-radius:8px; color:#33415c; background:#fff; font:inherit; font-size:.82rem; }.assistant-form input:focus { outline:2px solid rgba(62,99,212,.22); border-color:#6283e2; }.assistant-form button { padding:10px 15px; border:1px solid #345fdb; border-radius:8px; color:#fff; background:#345fdb; font-size:.78rem; font-weight:800; }.assistant-form button:disabled { cursor:wait; opacity:.7; }.assistant-form small { color:#75829a; font-size:.69rem; }.pulseops-workspace[data-theme="dark"] .assistant-panel { border-color:#29405f; background:linear-gradient(110deg,#0d1b31,#111d3b 55%,#171431); }.pulseops-workspace[data-theme="dark"] .assistant-suggestions button { border-color:#3b4f83; color:#c8d7ff; background:#172a49; }.pulseops-workspace[data-theme="dark"] .assistant-suggestions button:hover { background:#233b65; }.pulseops-workspace[data-theme="dark"] .assistant-message { border-color:#28405f; background:#0a1528; box-shadow:none; }.pulseops-workspace[data-theme="dark"] .assistant-message.user { border-color:#3c4d91; background:#172a50; }.pulseops-workspace[data-theme="dark"] .assistant-message span { color:#a9bddf; }.pulseops-workspace[data-theme="dark"] .assistant-message.user span { color:#bdc8ff; }.pulseops-workspace[data-theme="dark"] .assistant-message p { color:#d8e3f5; }.pulseops-workspace[data-theme="dark"] .assistant-form>label,.pulseops-workspace[data-theme="dark"] .assistant-form small { color:#a4b5ce; }.pulseops-workspace[data-theme="dark"] .assistant-form input { border-color:#304766; color:#dce7f9; background:#091426; }.pulseops-workspace[data-theme="dark"] .assistant-form button { border-color:#6a5bc3; background:#4a3fa0; } @media (max-width:530px) { .assistant-form>div { flex-direction:column; }.assistant-form button { width:100%; }.assistant-message { max-width:100%; } }
     </style>
@@ -38,27 +39,30 @@
       <aside class="sidebar">
         <div class="sidebar-brand"><div class="brand-mark">DB</div><div><strong>L1ControlScope</strong><span>CONTROLS &amp; OBSERVABILITY</span></div></div>
         <nav class="workspace-nav" aria-label="Workspace navigation">
-          <p>WORKSPACE</p>
+          <p>CONTROL CENTRE</p>
           <a href="#overview"><span>▦</span> Overview</a>
           <a href="#observability-center"><span>⌁</span> Operations</a>
+          <p>INVESTIGATE</p>
           <a href="#deployment-readiness"><span>▤</span> Workloads</a>
           <a href="#log-explorer-panel"><span>≡</span> Pod logs</a>
+          <a href="#alert-center"><span>!</span> Alerts</a>
+          <a href="#intelligence-center"><span>✦</span> Intelligence</a>
+          <p>ADMINISTRATION</p>
           <a href="#data-sources"><span>◉</span> Data sources</a>
           <a id="access-nav" href="#access-center"><span>◌</span> Access</a>
-          <a href="#intelligence-center"><span>✦</span> Intelligence</a>
-          <a href="#alert-center"><span>!</span> Alerts</a>
         </nav>
         <div class="sidebar-note"><span>READ-ONLY MODE</span><p>L1ControlScope observes workloads. Actions remain manual and controlled.</p></div>
       </aside>
       <div class="workspace-main">
         <header class="topbar">
-          <div><p class="eyebrow">KUBERNETES &amp; CONTAINER OBSERVABILITY</p><h1>Cluster <em>health</em></h1><p class="subtitle">A single operational view for live workload health, logs, and capacity.</p></div>
+          <div><p class="eyebrow">KUBERNETES &amp; CONTAINER OBSERVABILITY</p><h1>Platform <em>control</em></h1><p class="subtitle">Understand health first, then move from workload to evidence in one clear path.</p></div>
           <div class="header-right">
             <div class="header-status"><span id="mode" class="badge"></span><span id="connection" class="live-indicator">Live</span><span id="header-updated" class="muted">Updating…</span></div>
             <div class="header-controls">
               <span id="current-user" class="current-user"></span>
               <button id="logout" class="logout-button quiet-header-action" type="button">Sign out</button>
               <button id="theme-toggle" class="theme-toggle icon-header-action" type="button" aria-label="Switch color theme" title="Switch color theme">◐</button>
+              <button id="density-toggle" class="density-header-action" type="button" aria-label="Use compact density" title="Use compact density">Comfortable</button>
               <details class="header-more">
                 <summary aria-label="Open report actions" title="Report actions">More</summary>
                 <div class="header-more-menu"><button id="export-json" type="button">Export JSON</button><button id="print-report" type="button">Print report</button></div>
@@ -68,9 +72,11 @@
           </div>
         </header>
         <main>
-          <section id="overview" class="overview-intro page-section page-overview"><div><p class="eyebrow">ENVIRONMENT OVERVIEW</p><h2>Service reliability at a glance</h2></div><p>Start with readiness and capacity, then drill into a workload or the correlated pod log stream.</p></section>
+          <section id="overview" class="overview-intro page-section page-overview"><div><p class="eyebrow">ENVIRONMENT OVERVIEW</p><h2>Know what needs attention—then investigate with confidence.</h2></div><p>Start with live platform health, identify an affected workload, then follow the evidence path to pods, logs, and captured incident context.</p></section>
+          <section id="platform-health" class="platform-health page-section page-overview" aria-label="Platform health">Calculating platform health…</section>
           <section id="summary" class="metrics page-section page-overview" aria-label="Cluster summary"></section>
           <section id="overview-focus" class="panel page-section page-overview overview-focus-panel"><div class="panel-title"><div><p class="eyebrow">QUICK ATTENTION</p><h2>What should I check first?</h2></div><span class="muted">Live operational summary</span></div><p class="panel-description">Three concise signals to guide the next action without opening every page.</p><div id="overview-focus-content" class="overview-focus-grid"></div></section>
+          <section id="control-path" class="control-path page-section page-overview" aria-label="Guided investigation path"><div class="control-path-copy"><p class="eyebrow">GUIDED INVESTIGATION</p><h2>From signal to evidence</h2><p>Use one simple route when something needs attention. The detailed screens remain available, but you do not need to search for the next step.</p></div><div class="control-path-steps"><a href="#alert-center"><span>01</span><strong>Find the signal</strong><small>Review active alerts and recent changes.</small></a><a href="#deployment-readiness"><span>02</span><strong>Open the workload</strong><small>See deployment, service, pods, image, and capacity.</small></a><a href="#log-explorer-panel"><span>03</span><strong>Review the evidence</strong><small>Open safe log context and incident captures.</small></a></div></section>
           <section id="observability-center" class="operations-grid page-section page-operations audience-operator audience-executive">
             <article class="panel operations-trends"><div class="panel-title"><div><p class="eyebrow">OPERATIONAL TRENDS</p><h2>Capacity and event volume</h2></div><span id="trend-note" class="muted">Collecting live history</span></div><div id="operations-trends" class="trend-chart"></div></article>
             <article class="panel slo-panel"><div class="panel-title"><div><p class="eyebrow">SERVICE AVAILABILITY</p><h2>Is the service healthy?</h2></div><button class="panel-purpose panel-action" type="button" data-slo-review>View events</button></div><p class="panel-description">A quick view of availability, errors, and recent restarts.</p><div id="slo-health" class="empty">Calculating service availability…</div></article>
@@ -99,6 +105,14 @@
         </main>
       </div>
     </div>
+    <div id="investigation-backdrop" class="investigation-backdrop" hidden></div>
+    <aside id="investigation-drawer" class="investigation-drawer" aria-label="Workload investigation" aria-hidden="true">
+      <header>
+        <div><p class="eyebrow">WORKLOAD INVESTIGATION</p><h2 id="investigation-title">Select a workload</h2><p id="investigation-subtitle">Live status, evidence, and the next useful action.</p></div>
+        <button id="investigation-close" type="button" aria-label="Close workload investigation">×</button>
+      </header>
+      <div id="investigation-content" class="investigation-content"></div>
+    </aside>
     <button id="assistant-launcher" class="assistant-launcher" type="button" aria-label="Open L1ControlScope Intelligence">✦ <span>Ask L1ControlScope</span></button>
     <script src="/static/app.js"></script>
   </body>

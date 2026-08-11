@@ -66,7 +66,7 @@ The dashboard keeps a compact local operational history for up to 24 hours in th
 - Capacity ranking using current CPU, memory, and the existing 15-minute memory forecast.
 - Inferred frontend → backend → database / AI-runtime service relationships, based on monitored workload names.
 - A timeline of restart, runtime-health, deployment-state, and alert transitions.
-- Workload image/version visibility and deployment readiness.
+- Workload image/version visibility and deployment readiness, including locally saved workload views for fast filtering in larger environments.
 - Pod-level correlation of alerts, events, logs, restarts, and capacity data.
 - Saved local incident workspaces, plus JSON export and print-friendly incident reports.
 
@@ -120,7 +120,7 @@ The OIDC client Secret and OIDC session-signing secret are never placed in `valu
 
 ## Helm deployment
 
-The Helm chart at [`helm/pulseops`](helm/pulseops) creates the PulseOps Deployment, ServiceAccount, namespace-scoped read-only Role and RoleBinding, Service, and a PVC for saved users, encrypted password hashes, sessions, account-lock state, audit history, alerts, workspaces, and non-secret runtime settings. Ingress and autoscaling are optional.
+The Helm chart at [`helm/pulseops`](helm/pulseops) creates the PulseOps Deployment, ServiceAccount, namespace-scoped read-only Role and RoleBinding, Service, and a PVC for saved users, encrypted password hashes, sessions, account-lock state, audit history, alerts, workspaces, and non-secret runtime settings. Ingress is optional. Autoscaling remains disabled while this state is on the single PVC; move state to a shared database before scaling the dashboard to multiple replicas.
 
 Build and publish the container image first, then install the chart into the namespace PulseOps should monitor:
 
@@ -215,7 +215,8 @@ Repeated error patterns can be saved as persistent alert rules from the UI.
 - `POST /api/alert-rules/log-pattern` creates a persistent alert rule for a repeated
   log pattern.
 
-- `GET /health` – service health check
+- `GET /health` – process liveness check
+- `GET /ready` – telemetry readiness check; returns `503` when collection is failing or stale
 - `GET /api/overview` – summary, pod metrics, alerts, logs, and forecasts
 - `GET /api/pods/{pod_name}/forecast` – forecast for one pod
 

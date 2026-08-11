@@ -117,6 +117,9 @@ resources:
     memory: 512Mi
 
 autoscaling:
+  # Keep this false while persistence is enabled. Local users, audit records,
+  # alert rules, and incident evidence are stored on a single RWO PVC.
+  # Move this state to a shared database before enabling multiple replicas.
   enabled: false
   minReplicas: 1
   maxReplicas: 3

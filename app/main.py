@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -534,7 +535,39 @@ def admin_audit_events(request: Request, limit: int = Query(default=50, ge=1, le
 
 @app.get("/health")
 def health() -> dict:
+    """Liveness endpoint: the web process is available.
+
+    Collection can depend on an external Kubernetes, Docker, Splunk, or
+    Prometheus endpoint. A collection failure must not restart the dashboard
+    process in a loop, so readiness is reported separately at ``/ready``.
+    """
     return {"status": "ok", "service": "pulseops-ai", "collector": collector.status()}
+
+
+def _telemetry_readiness() -> tuple[bool, dict]:
+    status = collector.status()
+    maximum_age = max(15, int(os.getenv("TELEMETRY_STALE_AFTER_SECONDS", str(max(30, collector.interval_seconds * 4)))))
+    last_collected = status.get("last_collected")
+    age_seconds: int | None = None
+    if last_collected:
+        try:
+            collected_at = datetime.fromisoformat(str(last_collected).replace("Z", "+00:00"))
+            age_seconds = max(0, round((datetime.now(timezone.utc) - collected_at).total_seconds()))
+        except ValueError:
+            pass
+    healthy = bool(status.get("running")) and not status.get("error") and age_seconds is not None and age_seconds <= maximum_age
+    return healthy, {
+        "status": "ready" if healthy else "degraded",
+        "service": "pulseops-ai",
+        "collector": {**status, "age_seconds": age_seconds, "stale_after_seconds": maximum_age},
+    }
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness endpoint: only route traffic when live telemetry is current."""
+    healthy, payload = _telemetry_readiness()
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 
 @app.get("/metrics")
