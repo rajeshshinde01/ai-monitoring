@@ -24,6 +24,10 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
       AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-local-development-only-change-me}
+      SOURCE_REPOSITORY_URL: ${SOURCE_REPOSITORY_URL:-}
+      SOURCE_COMMIT_SHA: ${SOURCE_COMMIT_SHA:-}
+      SOURCE_DEFAULT_BRANCH: ${SOURCE_DEFAULT_BRANCH:-main}
+      SOURCE_PATH: ${SOURCE_PATH:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${KUBECONFIG_PATH:-/dev/null}:/root/.kube/config:ro

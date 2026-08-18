@@ -55,6 +55,49 @@ let selectedAccessUserEmail = '';
 let acknowledgedAlerts = {};
 let alertHistory = [];
 let sourceHealth = { status: 'checking', collector: {} };
+let urlMonitorEnvironment = 'dev';
+let urlMonitors = [];
+let urlMonitorSearch = '';
+let urlMonitorStatus = 'all';
+let urlMonitorActionMenu = '';
+let urlMonitorEditingId = '';
+let correlationIntelligence = null;
+let developerInvestigationPod = '';
+let developerInvestigationWorkspace = null;
+let sharedInvestigationRestored = false;
+let incidentReplayIndex = -1;
+let incidentReplayTimer = null;
+
+function renderCorrelationIntelligence() {
+  const target = document.querySelector('#correlation-intelligence');
+  if (!target) return;
+  if (!correlationIntelligence) { target.className = 'correlation-intelligence empty'; target.textContent = 'Correlating current operational signals…'; return; }
+  const summary = correlationIntelligence.summary || {};
+  const incidents = correlationIntelligence.incidents || [];
+  target.className = 'correlation-intelligence';
+  target.innerHTML = `<section class="correlation-overview"><div><span>Open investigations</span><strong>${summary.total || 0}</strong><small>Ranked by operational impact</small></div><div><span>Critical</span><strong>${summary.critical || 0}</strong><small>Immediate investigation</small></div><div><span>Signals reviewed</span><strong>${summary.signals_correlated || 0}</strong><small>URLs, deployments, pods, logs</small></div><div class="correlation-trust"><b>Rule-based & evidence-led</b><small>No AI connection required.</small></div></section>${incidents.length ? `<div class="correlation-list">${incidents.map((item, index) => `<article class="correlation-card ${escapeHtml(item.severity)}"><header><div><span class="correlation-rank">${String(index + 1).padStart(2, '0')}</span><div><small>${escapeHtml(item.environment?.toUpperCase() || 'PLATFORM')} · IMPACT ${item.score}/100</small><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.summary)}</p></div></div><span class="status ${item.severity}">${escapeHtml(item.severity)}</span></header><div class="correlation-body"><section><span>LIKELY CAUSE</span><p>${escapeHtml(item.probable_cause)}</p><span>OBSERVED EVIDENCE</span><ul>${item.evidence.map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ul></section><aside><div class="confidence"><span style="width:${item.confidence}%"></span></div><small>${item.confidence}% evidence strength</small><b>Recommended next action</b><p>${escapeHtml(item.recommendation)}</p>${item.pod ? `<button type="button" data-correlation-pod="${escapeHtml(item.pod)}">Open pod investigation</button>` : `<button type="button" data-correlation-urls>Open URL monitoring</button>`}</aside></div></article>`).join('')}</div>` : '<div class="correlation-clear"><span>✓</span><div><strong>No correlated incidents right now</strong><p>Current URL, deployment, pod, capacity, and log rules do not require action.</p></div></div>'}`;
+  const releases = correlationIntelligence.release_timeline || [];
+  const commitFromImage = image => String(image || '').match(/(?:^|[:@-])([a-f0-9]{7,40})(?:$|\b)/i)?.[1];
+  target.insertAdjacentHTML('beforeend', `<section class="release-timeline"><header><div><span>RELEASE OBSERVATION</span><h3>Deployment and image timeline</h3></div><small>Read automatically from the runtime—no pipeline change</small></header>${releases.length ? `<div>${releases.map(change => { const commit = commitFromImage(change.current_image); return `<article><i class="${change.severity === 'warning' ? 'changed' : ''}"></i><div><b>${escapeHtml(change.workload || change.pod || 'Workload')}</b><p>${escapeHtml(change.detail || change.current_image || 'Release observed')}</p><small>${new Date(Number(change.timestamp) * 1000).toLocaleString()}${commit ? ` · Possible commit ${escapeHtml(commit.slice(0, 12))}` : ' · Commit unavailable in runtime metadata'}</small></div><span>${escapeHtml(change.change_type === 'image' ? 'Image changed' : 'Observed')}</span></article>`; }).join('')}</div>` : '<p class="release-empty">The current release baseline has been captured. Future image and readiness changes will appear here automatically.</p>'}</section>`);
+  const comparisons = correlationIntelligence.deployment_comparisons || [];
+  const comparisonMetric = (label, key, before, after, suffix = '') => { const delta = before && after ? Number(after[key]) - Number(before[key]) : null; const tone = delta == null || delta === 0 ? 'neutral' : (key === 'ready_percent' ? delta < 0 : delta > 0) ? 'worse' : 'better'; return `<div><span>${label}</span><b>${before ? `${before[key]}${suffix}` : '—'} <i>→</i> ${after ? `${after[key]}${suffix}` : '—'}</b><small class="${tone}">${delta == null ? 'Baseline unavailable' : `${delta > 0 ? '+' : ''}${delta.toFixed(1)}${suffix}`}</small></div>`; };
+  target.insertAdjacentHTML('beforeend', `<section class="deployment-comparison"><header><div><span>RELEASE IMPACT</span><h3>Before / after deployment comparison</h3></div><small>15-minute windows · runtime evidence</small></header>${comparisons.length ? `<div>${comparisons.map(item => `<article class="${item.status}"><div class="comparison-heading"><div><b>${escapeHtml(item.workload)}</b><small>${new Date(Number(item.changed_at) * 1000).toLocaleString()}</small></div><span>${item.status === 'regressed' ? 'Regression detected' : item.status === 'stable' ? 'No regression detected' : 'Collecting baseline'}</span></div><div class="image-change"><code>${escapeHtml(item.previous_image || 'No previous image recorded')}</code><i>→</i><code>${escapeHtml(item.current_image || 'Image unavailable')}</code></div><div class="comparison-metrics">${comparisonMetric('Readiness', 'ready_percent', item.before, item.after, '%')}${comparisonMetric('Log errors', 'errors', item.before, item.after)}${comparisonMetric('Restarts', 'restarts', item.before, item.after)}${comparisonMetric('Memory', 'memory_percent', item.before, item.after, '%')}${comparisonMetric('CPU', 'cpu_percent', item.before, item.after, '%')}</div><p>${item.status === 'collecting' ? 'L1ControlScope has captured this release and is collecting enough pre/post samples for a reliable comparison.' : item.status === 'regressed' ? 'One or more operational signals worsened after this release. Review the changed metrics and correlated logs before deciding whether to roll back.' : 'The monitored readiness, restart, error, memory, and CPU signals did not materially regress in the available comparison window.'}</p></article>`).join('')}</div>` : '<p class="release-empty">No release observation is available yet. The comparison will begin automatically when an image is first observed or changes.</p>'}</section>`);
+  target.querySelectorAll('.deployment-comparison article').forEach((card, index) => { const item = comparisons[index]; if (item?.status !== 'collecting' || item.previous_image) return; card.querySelector('.comparison-heading > span').textContent = 'Baseline unavailable'; card.querySelector(':scope > p').textContent = 'This is the first observed release, so no earlier 15-minute baseline exists. L1ControlScope will automatically compare the next image change against retained runtime evidence.'; });
+  target.querySelectorAll('[data-correlation-pod]').forEach(button => button.addEventListener('click', () => openPodInvestigation(button.dataset.correlationPod)));
+  target.querySelectorAll('[data-correlation-urls]').forEach(button => button.addEventListener('click', () => { window.history.replaceState(null, '', '#url-monitoring'); setWorkspacePage('url-monitoring'); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+}
+
+async function loadCorrelationIntelligence() {
+  if (!isDeveloperOrAdministrator()) return;
+  try {
+    const response = await fetch('/api/operations-intelligence/correlations');
+    if (!response.ok) throw new Error('Correlation service unavailable');
+    correlationIntelligence = await response.json();
+  } catch (error) {
+    correlationIntelligence = { summary: {}, incidents: [{ severity: 'warning', score: 0, confidence: 0, title: 'Intelligence is temporarily unavailable', summary: error.message, probable_cause: 'The live correlation request could not complete.', evidence: [], recommendation: 'Refresh after the monitoring connection recovers.' }] };
+  }
+  renderCorrelationIntelligence();
+}
 
 const workloadViewsKey = 'l1controlscope-workload-views';
 function savedWorkloadViews() {
@@ -78,17 +121,62 @@ const command = (label, value, note = '') => `<div class="command-card"><div><st
 // These are deliberately global because summary cards and the floating
 // Intelligence assistant can be opened from outside the main workspace setup.
 function pageFromTarget(targetId) {
-  const page = targetId === 'observability-center' ? 'operations' : targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'log-explorer-panel' ? 'logs' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access-center' ? 'access' : targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alert-center' ? 'alerts' : 'overview';
+  const page = targetId === 'observability-center' ? 'operations' : targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access-center' ? 'access' : targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alert-center' ? 'alerts' : 'overview';
   if ((page === 'access' || page === 'data-sources') && !isAdministrator()) return 'overview';
   if ((page === 'logs' || page === 'operations') && !isDeveloperOrAdministrator()) return 'overview';
   return page;
+}
+
+function renderUrlMonitors() {
+  const environments = ['dev', 'qa', 'uat', 'prod'];
+  const visible = urlMonitors.filter(item => item.environment === urlMonitorEnvironment && (`${item.name} ${item.url}`).toLowerCase().includes(urlMonitorSearch.toLowerCase()) && (urlMonitorStatus === 'all' || (urlMonitorStatus === 'attention' ? ['degraded', 'down'].includes(item.status) : item.status === urlMonitorStatus)));
+  const operational = urlMonitors.filter(item => item.status === 'operational').length;
+  const attention = urlMonitors.filter(item => ['degraded', 'down'].includes(item.status)).length;
+  const averageLatency = Math.round(urlMonitors.filter(item => item.latency_ms != null).reduce((total, item) => total + item.latency_ms, 0) / Math.max(1, urlMonitors.filter(item => item.latency_ms != null).length));
+  document.querySelector('#url-monitor-banner').innerHTML = `<div class="url-banner-icon ${attention ? 'attention' : ''}">${attention ? '!' : '✓'}</div><div><strong>${attention ? `${attention} endpoint${attention === 1 ? '' : 's'} need attention` : urlMonitors.length ? 'All monitored endpoints are operational' : 'Ready to monitor your applications'}</strong><p>${attention ? 'Review degraded or unreachable applications below.' : urlMonitors.length ? 'Every enabled health check returned its expected response.' : 'Add your first environment URL to begin availability checks.'}</p></div><span>${operational}/${urlMonitors.filter(item => item.status !== 'disabled').length || 0} healthy</span>`;
+  document.querySelector('#url-monitor-summary').innerHTML = `<article><div class="metric-icon configured">◎</div><div><span>Configured URLs</span><strong>${urlMonitors.length}</strong><small>${new Set(urlMonitors.map(item => item.environment)).size} active environments</small></div></article><article><div class="metric-icon healthy">✓</div><div><span>Operational</span><strong>${operational}</strong><small>Expected response received</small></div></article><article><div class="metric-icon warning">!</div><div><span>Needs attention</span><strong>${attention}</strong><small>Degraded or unreachable</small></div></article><article><div class="metric-icon latency">⌁</div><div><span>Average latency</span><strong>${averageLatency || '—'}${averageLatency ? ' ms' : ''}</strong><small>Across latest checks</small></div></article>`;
+  document.querySelector('#url-monitor-tabs').innerHTML = environments.map(environment => { const items = urlMonitors.filter(item => item.environment === environment); const issues = items.filter(item => ['degraded','down'].includes(item.status)).length; return `<button type="button" class="${environment === urlMonitorEnvironment ? 'active' : ''}" data-url-environment="${environment}"><i class="env-dot ${issues ? 'attention' : ''}"></i><b>${environment.toUpperCase()}</b><small>${items.length} URL${items.length === 1 ? '' : 's'}</small>${issues ? `<em>${issues}</em>` : ''}</button>`; }).join('');
+  document.querySelectorAll('[data-url-environment]').forEach(button => button.addEventListener('click', () => { urlMonitorEnvironment = button.dataset.urlEnvironment; renderUrlMonitors(); }));
+  document.querySelector('#url-monitor-list').className = 'url-monitor-list';
+  document.querySelector('#url-monitor-list').innerHTML = `<div class="url-monitor-list-head"><span>APPLICATION & ENDPOINT</span><span>HEALTH</span><span>RESPONSE</span><span>EXPECTED</span><span>LAST CHECK</span><span></span></div>${visible.length ? visible.map(item => `<article class="url-monitor-card"><div class="url-app"><span class="url-app-icon">${escapeHtml(item.name.slice(0,2).toUpperCase())}</span><div><strong>${escapeHtml(item.name)}</strong><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.url)} ↗</a><small>${escapeHtml(item.environment.toUpperCase())} · ${escapeHtml(item.health_path || '/')}</small></div></div><span class="status ${item.status === 'operational' ? 'healthy' : item.status === 'degraded' ? 'warning' : item.status === 'disabled' ? '' : 'critical'}"><i></i>${escapeHtml(item.status)}</span><div class="url-response"><strong>${item.latency_ms == null ? '—' : `${item.latency_ms} ms`}</strong><small>${item.status_code ? `HTTP ${item.status_code}` : item.error || 'Not checked'}</small></div><div class="url-expected"><strong>HTTP ${item.expected_status}</strong><small>${item.enabled ? 'Monitoring enabled' : 'Monitoring disabled'}</small></div><div class="url-checked"><strong>${item.checked_at ? new Date(item.checked_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—'}</strong><small>Latest run</small></div>${isAdministrator() ? `<div class="url-row-actions">${urlMonitorActionMenu === item.id ? `<button type="button" data-url-edit="${escapeHtml(item.id)}">Edit</button><button type="button" class="danger" data-url-delete="${escapeHtml(item.id)}">Delete</button>` : `<button type="button" class="url-row-menu" data-url-menu="${escapeHtml(item.id)}" aria-label="Actions for ${escapeHtml(item.name)}">•••</button>`}</div>` : '<span></span>'}</article>`).join('') : `<div class="url-monitor-empty"><span>◎</span><strong>No matching ${urlMonitorEnvironment.toUpperCase()} URLs</strong><p>Add an environment URL or adjust the current search and status filters.</p></div>`}`;
+  document.querySelectorAll('[data-url-menu]').forEach(button => button.addEventListener('click', () => { urlMonitorActionMenu = button.dataset.urlMenu; renderUrlMonitors(); }));
+  document.querySelectorAll('[data-url-edit]').forEach(button => button.addEventListener('click', () => { urlMonitorEditingId = button.dataset.urlEdit; urlMonitorActionMenu = ''; renderUrlMonitors(); document.querySelector('.url-monitor-add')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }));
+  document.querySelectorAll('[data-url-delete]').forEach(button => button.addEventListener('click', async () => { if (!window.confirm('Delete this URL monitor?')) return; await fetch(`/api/url-monitors/${encodeURIComponent(button.dataset.urlDelete)}`, { method: 'DELETE' }); await loadUrlMonitors(); }));
+  const admin = document.querySelector('#url-monitor-admin');
+  const editing = urlMonitors.find(item => item.id === urlMonitorEditingId);
+  admin.innerHTML = isAdministrator() ? `<details class="url-monitor-add" ${editing ? 'open' : ''}><summary><span>${editing ? '✎' : '＋'}</span><div><strong>${editing ? 'Edit application endpoint' : 'Add an application endpoint'}</strong><small>${editing ? 'Update the URL, health path, expected response, or monitoring state' : 'Configure an approved URL for continuous environment monitoring'}</small></div><b>${editing ? 'Editing' : 'Open form'}</b></summary><form id="url-monitor-form"><label>Application name<input name="name" required maxlength="120" placeholder="Customer portal" value="${escapeHtml(editing?.name || '')}"></label><label>Environment<select name="environment">${environments.map(environment => `<option value="${environment}" ${editing?.environment === environment ? 'selected' : ''}>${environment.toUpperCase()}</option>`).join('')}</select></label><label class="wide-field">Application URL<input name="url" type="url" required placeholder="https://app-dev.example.com" value="${escapeHtml(editing?.url || '')}"></label><label>Health-check path<input name="health_path" placeholder="/health or /" value="${escapeHtml(editing?.health_path || '')}"></label><label>Expected response<input name="expected_status" type="number" min="100" max="599" value="${Number(editing?.expected_status || 200)}"></label><label class="url-monitor-enabled"><input name="enabled" type="checkbox" ${editing?.enabled === false ? '' : 'checked'}><span>Enable continuous checks</span></label><button type="submit" class="primary">${editing ? 'Save changes' : 'Add endpoint'}</button>${editing ? '<button type="button" class="url-edit-cancel" data-url-edit-cancel>Cancel</button>' : ''}<p class="form-message"></p></form></details>` : '<p class="rule-view-only">Administrators manage URLs. You can review and refresh their current status.</p>';
+  admin.querySelector('#url-monitor-form')?.addEventListener('submit', saveUrlMonitor);
+  admin.querySelector('[data-url-edit-cancel]')?.addEventListener('click', () => { urlMonitorEditingId = ''; renderUrlMonitors(); });
+}
+
+async function loadUrlMonitors() {
+  const button = document.querySelector('#url-monitor-refresh');
+  button?.classList.add('loading'); if (button) button.querySelector('span').textContent = 'Checking endpoints…';
+  const response = await fetch('/api/url-monitors');
+  if (!response.ok) { document.querySelector('#url-monitor-list').innerHTML = '<p class="empty">URL monitoring is unavailable for this account.</p>'; button?.classList.remove('loading'); return; }
+  urlMonitors = (await response.json()).monitors || [];
+  document.querySelector('#url-monitor-updated').textContent = `Last checked ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+  button?.classList.remove('loading'); if (button) button.querySelector('span').textContent = 'Run health check';
+  renderUrlMonitors();
+}
+
+async function saveUrlMonitor(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form).entries());
+  const payload = { ...values, expected_status: Number(values.expected_status), enabled: form.elements.enabled.checked };
+  const endpoint = urlMonitorEditingId ? `/api/url-monitors/${encodeURIComponent(urlMonitorEditingId)}` : '/api/url-monitors';
+  const response = await fetch(endpoint, { method: urlMonitorEditingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const result = await response.json();
+  if (!response.ok) { form.querySelector('.form-message').textContent = result.detail || 'Unable to add URL.'; return; }
+  urlMonitorEnvironment = payload.environment; urlMonitorEditingId = ''; urlMonitorActionMenu = ''; form.reset(); await loadUrlMonitors();
 }
 
 function setWorkspacePage(page) {
   document.body.dataset.page = page;
   document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab => {
     const targetId = (tab.getAttribute('href') || '#overview').slice(1);
-    const selected = pageFromTarget(targetId) === page;
+    const selected = pageFromTarget(targetId) === page && !(page === 'overview' && targetId !== 'overview');
     tab.classList.toggle('active', selected);
     if (selected) tab.setAttribute('aria-current', 'page'); else tab.removeAttribute('aria-current');
   });
@@ -97,11 +185,18 @@ function setWorkspacePage(page) {
 function assistantMessageHtml(message) {
   const actions = message.actions?.length ? `<div class="assistant-message-actions">${message.actions.map(action => `<button data-assistant-action="${escapeHtml(action.type)}" data-assistant-pod="${escapeHtml(action.pod)}">${escapeHtml(action.label)}</button>`).join('')}</div>` : '';
   const source = message.provider === 'ollama' ? ` · Local Ollama (${message.model})` : message.provider === 'python-fallback' ? ' · Python fallback' : '';
-  return `<article class="assistant-message ${message.role}"><span>${message.role === 'user' ? 'You' : `L1ControlScope Intelligence${escapeHtml(source)}`}</span><p>${escapeHtml(message.text).replaceAll('\n', '<br>')}</p>${actions}</article>`;
+  const scope = message.scope ? `<div class="assistant-query-scope"><b>Search scope</b>${message.scope.sources?.length ? `<span>${escapeHtml(message.scope.sources.join(' + '))}</span>` : ''}${message.scope.time_range_minutes ? `<span>${Math.round(message.scope.time_range_minutes / 60)}h</span>` : ''}${message.scope.matched_pods?.length ? `<span>${escapeHtml(message.scope.matched_pods.join(', '))}</span>` : ''}${message.scope.terms?.length ? `<span>Terms: ${escapeHtml(message.scope.terms.join(', '))}</span>` : ''}</div>` : '';
+  return `<article class="assistant-message ${message.role}"><span>${message.role === 'user' ? 'You' : `L1ControlScope Operations${escapeHtml(source)}`}</span>${scope}<p>${escapeHtml(message.text).replaceAll('\n', '<br>')}</p>${actions}</article>`;
 }
 
 function renderAssistant() {
   const target = document.querySelector('#assistant');
+  const operationsPanel = target.closest('.optional-ai');
+  if (operationsPanel) {
+    operationsPanel.open = true;
+    operationsPanel.querySelector('summary b').textContent = 'Ask Operations';
+    operationsPanel.querySelector('summary small').textContent = 'Search app evidence first; optional AI only summarizes verified results';
+  }
   const runtime = `<section class="assistant-runtime ${assistantRuntimeOpen ? 'open' : ''}"><div class="integration-heading"><strong>AI runtime</strong><small>Optional grounded response wording</small></div><label class="assistant-runtime-toggle"><input id="runtime-enabled" type="checkbox" ${assistantRuntime.enabled ? 'checked' : ''}> Enable local Ollama for grounded assistant responses</label><label>Ollama address<input id="runtime-base-url" value="${escapeHtml(assistantRuntime.base_url)}" placeholder="http://ollama:11434"></label><label>Approved model<input id="runtime-model" value="${escapeHtml(assistantRuntime.model)}" placeholder="llama3.2:3b"></label><div class="assistant-runtime-actions"><button type="button" class="primary" data-runtime-save>Save settings</button><button type="button" data-runtime-test>Test connection</button></div><p class="assistant-runtime-status">${escapeHtml(assistantRuntimeStatus || 'Settings stay inside PulseOps local storage. The connection test sends no telemetry or logs.')}</p></section>`;
   target.innerHTML = `${runtime}<div class="assistant-suggestions"><button data-assistant-prompt="Which pod needs attention?" ${assistantWaiting ? 'disabled' : ''}>⌁ Attention</button><button data-assistant-prompt="Show memory risk and forecast" ${assistantWaiting ? 'disabled' : ''}>◒ Memory</button><button data-assistant-prompt="What errors are in the logs?" ${assistantWaiting ? 'disabled' : ''}>⚠ Logs</button><button data-assistant-prompt="Run database playbook" ${assistantWaiting ? 'disabled' : ''}>▤ DB playbook</button><button data-assistant-prompt="Show incident timeline" ${assistantWaiting ? 'disabled' : ''}>◷ Timeline</button></div><div class="assistant-chat" aria-live="polite">${assistantMessages.map(assistantMessageHtml).join('')}${assistantWaiting ? '<article class="assistant-message assistant"><span>PulseOps Intelligence</span><p>Reviewing current telemetry…</p></article>' : ''}</div><form id="assistant-form" class="assistant-form"><label for="assistant-question">Ask about your operations</label><div><input id="assistant-question" maxlength="1000" value="${escapeHtml(assistantDraft)}" placeholder="Example: How many pods are running?" autocomplete="off"><button ${assistantWaiting ? 'disabled' : ''}>Ask</button></div><small>Python-based, data-grounded analysis of live telemetry and masked logs.</small></form>`;
   target.querySelectorAll('[data-assistant-prompt]').forEach(button => button.addEventListener('click', () => { assistantDraft = ''; askAssistant(button.dataset.assistantPrompt); }));
@@ -148,7 +243,7 @@ function splunkFormValues() {
 function renderDataSources() {
   const target = document.querySelector('#data-sources-content');
   if (!target) return;
-  const windows = [[15, '15 minutes'], [60, '60 minutes'], [120, '2 hours'], [480, '8 hours'], [2880, '2 days'], [11520, '8 days'], [21600, '15 days'], [43200, '1 month']];
+  const windows = [[15, '15 minutes'], [60, '60 minutes'], [120, '2 hours'], [480, '8 hours'], [720, '12 hours'], [1440, '24 hours'], [2880, '2 days'], [11520, '8 days'], [21600, '15 days'], [43200, '1 month']];
   target.innerHTML = `<article class="data-source-card"><span class="status healthy">Optional</span><h3>Kubernetes / OpenShift</h3><p>Preferred source for current pods, deployments, Services, CPU, memory, and restart counts. Requires platform-provided read-only access.</p><p class="source-status">PulseOps automatically uses this source when its monitoring identity has permission.</p></article><article class="data-source-card"><span class="status ${splunkSettings.enabled ? 'healthy' : 'warning'}">${splunkSettings.enabled ? 'Configured' : 'Not configured'}</span><h3>Splunk</h3><p>External workload evidence and all logs for the selected application scope. The token stays in a Secret.</p><label><input id="splunk-enabled" type="checkbox" ${splunkSettings.enabled ? 'checked' : ''}> Enable Splunk source</label><label>Management URL<input id="splunk-base-url" value="${escapeHtml(splunkSettings.base_url)}" placeholder="https://splunk.company.example:8089"></label><label>Index<input id="splunk-index" value="${escapeHtml(splunkSettings.index)}"></label><label>Application scope field<input id="splunk-scope-field" value="${escapeHtml(splunkSettings.scope_field || 'kubernetes.namespace')}"></label><label>Application scope value<input id="splunk-scope-value" value="${escapeHtml(splunkSettings.scope_value || '')}" placeholder="mindspark-official"></label><label>Search window<select id="splunk-lookback">${windows.map(([value, label]) => `<option value="${value}" ${Number(splunkSettings.lookback_minutes) === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><div class="source-actions"><button class="primary" data-splunk-save>Save Splunk</button><button data-splunk-test>Test connection</button></div><p class="source-status">${escapeHtml(splunkSettingsStatus || (splunkTokenConfigured ? 'API token is securely configured. Pod-field mapping is managed internally.' : 'SPLUNK_API_TOKEN and SPLUNK_ALLOWED_HOSTS must be provided by an administrator.'))}</p></article><article class="data-source-card"><span class="status ${prometheusSettings.enabled ? 'healthy' : 'warning'}">${prometheusSettings.enabled ? 'Configured' : 'Disabled'}</span><h3>Prometheus</h3><p>Numeric CPU, memory, restart, and availability history for forecasting. Any token remains in a Secret.</p><label><input id="prometheus-enabled" type="checkbox" ${prometheusSettings.enabled ? 'checked' : ''}> Enable Prometheus source</label><label>Prometheus URL<input id="prometheus-base-url" value="${escapeHtml(prometheusSettings.base_url)}" placeholder="https://prometheus.company.example"></label><div class="source-actions"><button class="primary" data-prometheus-save>Save Prometheus</button><button data-prometheus-test>Test connection</button></div><p class="source-status">${escapeHtml(prometheusSettingsStatus || (prometheusTokenConfigured ? 'API token is securely configured.' : 'PROMETHEUS_ALLOWED_HOSTS must be provided by an administrator. Add PROMETHEUS_API_TOKEN only when your endpoint requires it.'))}</p></article>`;
   const collector = sourceHealth.collector || {};
   const runtimeSource = data?.mode === 'docker' ? 'Local Docker' : data?.mode === 'splunk' ? 'Splunk' : data?.mode === 'kubernetes' ? 'Kubernetes / OpenShift' : 'Waiting for telemetry';
@@ -247,7 +342,7 @@ async function askAssistant(question) {
     const response = await fetch('/api/assistant', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: cleanQuestion, current_pod: selectedPodName || null }) });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Unable to review live telemetry.');
-    assistantMessages.push({ role: 'assistant', text: `${payload.answer}${payload.runtime?.notice ? `\n\n${payload.runtime.notice}` : ''}`, actions: payload.actions || [], provider: payload.runtime?.provider, model: payload.runtime?.model });
+    assistantMessages.push({ role: 'assistant', text: `${payload.answer}${payload.runtime?.notice ? `\n\n${payload.runtime.notice}` : ''}`, actions: payload.actions || [], scope: payload.scope, provider: payload.runtime?.provider, model: payload.runtime?.model });
   } catch (error) {
     assistantMessages.push({ role: 'assistant', text: `I could not review the live telemetry: ${error.message}` });
   } finally {
@@ -421,7 +516,8 @@ function renderInvestigationDrawer(name) {
     <section class="investigation-section"><p class="eyebrow">RELATED WORKLOAD</p><strong>${escapeHtml(deployment?.name || 'No deployment mapping')}</strong><small>${escapeHtml(pod.image || 'Image unavailable')}</small></section>
     <section class="investigation-section"><p class="eyebrow">RECENT CHANGES</p>${events.length ? `<ul>${events.map(event => `<li><strong>${escapeHtml(event.title)}</strong><span>${escapeHtml(event.detail || 'Live monitoring event')}</span></li>`).join('')}</ul>` : '<p class="muted">No restart, deployment, or alert transition in the selected window.</p>'}</section>
     <section class="investigation-section"><p class="eyebrow">EVIDENCE</p><div class="investigation-evidence"><span>${alerts.length} active alert${alerts.length === 1 ? '' : 's'}</span><span>${evidence.length ? 'Pre-restart snapshot captured' : 'No captured incident snapshot'}</span><span>${forecast ? `${percent(forecast.forecast_percent ?? forecast.current_percent)} memory outlook` : 'No memory forecast yet'}</span></div></section>
-    <div class="investigation-actions"><button type="button" data-investigation-details="${escapeHtml(name)}">Open full details</button>${isDeveloperOrAdministrator() ? `<button type="button" data-investigation-logs="${escapeHtml(name)}">Open logs</button>` : ''}<button type="button" data-investigation-alerts="${escapeHtml(name)}">View alerts</button></div>`;
+    <div class="investigation-actions">${isDeveloperOrAdministrator() ? `<button type="button" class="primary" data-developer-workspace="${escapeHtml(name)}">Developer workspace</button>` : ''}<button type="button" data-investigation-details="${escapeHtml(name)}">Open full details</button>${isDeveloperOrAdministrator() ? `<button type="button" data-investigation-logs="${escapeHtml(name)}">Open logs</button>` : ''}<button type="button" data-investigation-alerts="${escapeHtml(name)}">View alerts</button></div>`;
+  document.querySelector('[data-developer-workspace]')?.addEventListener('click', () => openDeveloperInvestigation(name));
   document.querySelector('[data-investigation-details]').addEventListener('click', () => openInvestigationDetails(name));
   document.querySelector('[data-investigation-logs]')?.addEventListener('click', () => {
     closeInvestigationDrawer(); logExplorerPodName = name; logExplorerLevel = 'all'; logExplorerSearch = ''; setWorkspacePage('logs'); renderLogExplorer(); document.querySelector('#log-explorer-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -439,6 +535,155 @@ function openPodInvestigation(name) {
   document.body.classList.add('investigation-drawer-open');
   document.querySelector('#investigation-drawer').setAttribute('aria-hidden', 'false');
   document.querySelector('#investigation-backdrop').hidden = false;
+}
+
+function ensureDeveloperInvestigationPage() {
+  if (!document.querySelector('a[href="#developer-investigation"]')) {
+    const link = document.createElement('a');
+    link.href = '#developer-investigation'; link.innerHTML = '<span>⌕</span> Investigation';
+    link.hidden = !isDeveloperOrAdministrator();
+    document.querySelector('.workspace-nav a[href="#intelligence-center"]')?.before(link);
+  }
+  if (!document.querySelector('#developer-investigation')) {
+    const panel = document.createElement('article');
+    panel.id = 'developer-investigation'; panel.className = 'panel wide page-section page-investigation developer-investigation';
+    panel.innerHTML = '<div class="empty">Loading available workloads and recent signals…</div>';
+    document.querySelector('.layout')?.insertBefore(panel, document.querySelector('#intelligence-center'));
+  }
+}
+
+function renderDeveloperInvestigationLanding() {
+  const target = document.querySelector('#developer-investigation');
+  if (!target) return;
+  const pods = [...(data?.pods || [])].sort((left, right) => {
+    const rank = { critical: 3, warning: 2, healthy: 1 };
+    return (rank[right.risk] || 0) - (rank[left.risk] || 0) || Number(right.restarts || 0) - Number(left.restarts || 0) || left.name.localeCompare(right.name);
+  });
+  const groups = groupedErrorSignatures().slice(0, 5);
+  const unhealthy = pods.filter(pod => pod.risk === 'critical' || pod.risk === 'warning' || pod.status !== 'Running');
+  const restarts = pods.reduce((sum, pod) => sum + Number(pod.restarts || 0), 0);
+  const logErrors = pods.reduce((sum, pod) => sum + Number(data?.analysis?.[pod.name]?.counts?.errors || 0), 0);
+  target.innerHTML = `<header class="developer-investigation-hero investigation-landing-hero"><div><p class="eyebrow">DEVELOPER INVESTIGATION WORKSPACE</p><h2>Choose where to investigate</h2><p>Start from an application or pod. The workspace will automatically combine its deployment, logs, errors, URLs, restarts, release changes, and captured evidence.</p></div></header>
+  <section class="developer-investigation-summary"><article><span>Available pods</span><strong>${pods.length}</strong><small>Live monitored workloads</small></article><article><span>Needs attention</span><strong>${unhealthy.length}</strong><small>Warning, critical, or not running</small></article><article><span>Restarts</span><strong>${restarts}</strong><small>Across monitored pods</small></article><article><span>Log errors</span><strong>${logErrors}</strong><small>${groups.length} grouped signatures</small></article></section>
+  <div class="investigation-landing-grid"><section><div class="investigation-block-heading"><div><p class="eyebrow">APPLICATIONS & PODS</p><h3>Start an investigation</h3></div><span class="muted">Attention first</span></div>${pods.length ? `<div class="investigation-pod-picker">${pods.map(pod => { const analysis = data?.analysis?.[pod.name] || { counts: { errors: 0 } }; return `<button type="button" data-investigation-start="${escapeHtml(pod.name)}"><span class="${severityClass(pod.risk)}">${escapeHtml(pod.risk || pod.status)}</span><div><b>${escapeHtml(pod.name)}</b><small>${escapeHtml(pod.namespace || 'default')} · ${escapeHtml(pod.status)} · ${Number(pod.restarts || 0)} restarts</small></div><strong>${Number(analysis.counts?.errors || 0)} errors <i>→</i></strong></button>`; }).join('')}</div>` : '<p class="empty">No pods are available from the connected runtime yet.</p>'}</section>
+  <section><div class="investigation-block-heading"><div><p class="eyebrow">RECENT SIGNALS</p><h3>Grouped error signatures</h3></div></div>${groups.length ? `<div class="workspace-error-groups">${groups.map(group => `<article><b>${escapeHtml(group.signature)}</b><p>${group.count} occurrence${group.count === 1 ? '' : 's'} · ${group.pods.size} pod${group.pods.size === 1 ? '' : 's'}</p><small>${escapeHtml([...group.pods].join(', '))}</small><button type="button" data-investigation-start="${escapeHtml(group.examplePod)}">Investigate matching pod</button></article>`).join('')}</div>` : '<p class="empty">No grouped error or warning signatures are currently present.</p>'}</section></div>`;
+  target.querySelectorAll('[data-investigation-start]').forEach(button => button.addEventListener('click', () => openDeveloperInvestigation(button.dataset.investigationStart)));
+}
+
+function investigationShareUrl(workspaceId) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('investigation', workspaceId);
+  url.hash = 'developer-investigation';
+  return url.toString();
+}
+
+function sourceCodeContext(image, signature = '') {
+  const source = data?.source_context || {};
+  const repository = String(source.repository_url || '').replace(/\.git$/, '').replace(/\/$/, '');
+  if (!/^https?:\/\//i.test(repository)) return null;
+  const imageCommit = String(image || '').match(/(?:^|[:@-])([a-f0-9]{7,40})(?:$|\b)/i)?.[1];
+  const ref = source.commit_sha || imageCommit || source.default_branch || 'main';
+  const location = String(signature).match(/(?:^|\s|\()([\w./-]+\.(?:py|js|jsx|ts|tsx|java|go|cs|rb|php|kt|scala|cpp|c|h))(?::|\s+line\s+)(\d+)/i);
+  const file = location?.[1] || source.source_path || '';
+  const line = location?.[2] || '';
+  const providerPath = /bitbucket\.org/i.test(repository) ? 'src' : 'blob';
+  const url = file ? `${repository}/${providerPath}/${encodeURIComponent(ref)}/${file.split('/').map(encodeURIComponent).join('/')}${line ? `#L${line}` : ''}` : `${repository}/tree/${encodeURIComponent(ref)}`;
+  return { repository, ref, file, line, url, exact: Boolean(location), origin: source.commit_sha ? 'configured' : imageCommit ? 'image' : 'branch' };
+}
+
+function incidentReplayEvents(pod, deployment, relatedPods, groups, urls, captures) {
+  const relatedNames = new Set(relatedPods.map(item => item.name));
+  const events = (observabilityData.events || []).filter(item => relatedNames.has(item.pod) || item.pod === deployment?.name || item.workload === deployment?.name).map(item => ({ timestamp: Number(item.timestamp) * 1000, kind: item.kind || 'event', severity: item.severity || 'healthy', title: item.title || 'Operational event', detail: item.detail || '', source: item.pod || deployment?.name || pod.name }));
+  const deploymentEvents = (correlationIntelligence?.deployment_comparisons || []).filter(item => item.workload === deployment?.name).map(item => ({ timestamp: Number(item.changed_at) * 1000, kind: 'deployment', severity: item.status === 'regressed' ? 'critical' : 'healthy', title: item.status === 'regressed' ? 'Release regression detected' : 'Release observed', detail: `${item.previous_image || 'No baseline'} → ${item.current_image || 'Unknown image'}`, source: item.workload }));
+  const errorEvents = groups.map(group => ({ timestamp: Date.parse(group.first || group.last || '') || Date.now(), kind: 'log', severity: group.levels.has('critical') || group.levels.has('error') ? 'critical' : 'warning', title: 'First matching error signature', detail: `${group.signature} · ${group.count} occurrence${group.count === 1 ? '' : 's'}`, source: [...group.pods][0] || pod.name }));
+  const urlEvents = urls.filter(item => item.checked_at).map(item => ({ timestamp: Date.parse(item.checked_at), kind: 'url', severity: ['down', 'degraded'].includes(item.status) ? 'critical' : 'healthy', title: `URL check ${item.status}`, detail: `${item.url} · ${item.status_code ? `HTTP ${item.status_code}` : item.error || 'No response'}`, source: `${item.environment?.toUpperCase() || 'ENV'} · ${item.name}` }));
+  const evidenceEvents = captures.map(item => ({ timestamp: Date.parse(item.created_at || item.captured_at || item.timestamp || '') || Date.now(), kind: 'evidence', severity: 'warning', title: 'Incident evidence captured', detail: item.reason || item.summary || 'Pre-incident log evidence preserved', source: item.pod || pod.name }));
+  const current = { timestamp: Date.now(), kind: 'current', severity: pod.risk || 'healthy', title: pod.risk === 'healthy' ? 'Current state is healthy' : `Current state needs ${pod.risk} attention`, detail: `${pod.status} · ${pod.restarts || 0} restarts · image ${deployment?.image || pod.image || 'unavailable'}`, source: pod.name };
+  const combined = [...events, ...deploymentEvents, ...errorEvents, ...urlEvents, ...evidenceEvents, current].filter(item => Number.isFinite(item.timestamp));
+  const unique = new Map(combined.map(item => [`${item.timestamp}|${item.kind}|${item.title}|${item.source}`, item]));
+  return [...unique.values()].sort((left, right) => left.timestamp - right.timestamp).slice(-40);
+}
+
+async function restoreSharedInvestigation() {
+  const workspaceId = new URL(window.location.href).searchParams.get('investigation');
+  if (!workspaceId || sharedInvestigationRestored) return;
+  sharedInvestigationRestored = true;
+  try {
+    const response = await fetch(`/api/incident-workspaces/${encodeURIComponent(workspaceId)}`);
+    if (!response.ok) return;
+    const workspace = (await response.json()).workspace;
+    if (workspace?.pod && data?.pods?.some(pod => pod.name === workspace.pod)) {
+      developerInvestigationWorkspace = workspace;
+      developerInvestigationPod = workspace.pod;
+    }
+  } catch { /* The landing page remains available if a shared record expired. */ }
+}
+
+async function openDeveloperInvestigation(podName) {
+  if (!data?.pods?.some(pod => pod.name === podName)) return;
+  if (developerInvestigationPod !== podName) incidentReplayIndex = -1;
+  if (incidentReplayTimer) { clearInterval(incidentReplayTimer); incidentReplayTimer = null; }
+  developerInvestigationPod = podName;
+  try {
+    const response = await fetch('/api/incident-workspaces');
+    const payload = await response.json();
+    const existing = (payload.workspaces || []).find(item => item.pod === podName && item.status !== 'resolved');
+    if (existing) developerInvestigationWorkspace = existing;
+    else {
+      const pod = data.pods.find(item => item.name === podName);
+      const created = await fetch('/api/incident-workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: `${podName} investigation`, note: '', pod: podName, severity: pod.risk === 'critical' ? 'critical' : 'warning' }) });
+      if (created.ok) developerInvestigationWorkspace = (await created.json()).workspace;
+    }
+  } catch { developerInvestigationWorkspace = null; }
+  closeInvestigationDrawer();
+  const destination = developerInvestigationWorkspace?.id ? investigationShareUrl(developerInvestigationWorkspace.id) : '#developer-investigation';
+  window.history.replaceState(null, '', destination);
+  setWorkspacePage('investigation');
+  renderDeveloperInvestigation();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function renderDeveloperInvestigation() {
+  const target = document.querySelector('#developer-investigation');
+  const pod = data?.pods?.find(item => item.name === developerInvestigationPod);
+  if (!target) return;
+  if (!pod) { renderDeveloperInvestigationLanding(); return; }
+  const deployment = (data.deployments || []).find(item => (item.resources || []).some(resource => resource.pod?.name === pod.name));
+  const relatedPods = deployment?.resources?.map(resource => resource.pod).filter(Boolean) || [pod];
+  const relatedNames = new Set(relatedPods.map(item => item.name));
+  const analysis = data.analysis?.[pod.name] || { severity: 'healthy', counts: { errors: 0, warnings: 0, oom_events: 0 }, findings: [] };
+  const groups = groupedErrorSignatures().filter(group => [...group.pods].some(name => relatedNames.has(name))).slice(0, 6);
+  const events = (observabilityData.events || []).filter(item => relatedNames.has(item.pod) || item.pod === deployment?.name).slice(0, 10);
+  const comparison = (correlationIntelligence?.deployment_comparisons || []).find(item => item.workload === deployment?.name);
+  const urls = urlMonitors.filter(item => { const text = `${item.name} ${item.url}`.toLowerCase(); return String(deployment?.name || pod.name).toLowerCase().split(/[-_.]/).filter(term => term.length > 3).some(term => text.includes(term)); });
+  const captures = (data.incident_evidence || []).filter(item => relatedNames.has(item.pod));
+  const workspace = developerInvestigationWorkspace;
+  const status = workspace?.status || 'open';
+  const image = deployment?.image || pod.image || '';
+  const source = sourceCodeContext(image);
+  const replay = incidentReplayEvents(pod, deployment, relatedPods, groups, urls, captures);
+  if (incidentReplayIndex < 0 || incidentReplayIndex >= replay.length) incidentReplayIndex = Math.max(0, replay.length - 1);
+  const replayActive = replay[incidentReplayIndex];
+  target.innerHTML = `<header class="developer-investigation-hero"><div><p class="eyebrow">DEVELOPER INVESTIGATION WORKSPACE</p><h2>${escapeHtml(deployment?.name || pod.name)}</h2><p>${escapeHtml(pod.namespace || 'default')} · ${relatedPods.length} scoped pod${relatedPods.length === 1 ? '' : 's'} · opened ${workspace?.created_at ? new Date(workspace.created_at).toLocaleString() : 'for this session'}</p></div><div class="investigation-header-controls"><label class="investigation-pod-control">Investigating<select id="developer-investigation-pod-switch">${(data.pods || []).map(item => `<option value="${escapeHtml(item.name)}" ${item.name === pod.name ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label><div class="investigation-control-group"><button type="button" class="all-pods-control" data-developer-all-pods><span>←</span> All pods</button><div class="investigation-health-control"><small>Health</small><span class="status ${pod.risk}">${escapeHtml(pod.risk)}</span></div><label>Investigation status<select id="developer-investigation-status"><option value="open" ${status === 'open' ? 'selected' : ''}>Open</option><option value="monitoring" ${status === 'monitoring' ? 'selected' : ''}>Monitoring</option><option value="resolved" ${status === 'resolved' ? 'selected' : ''}>Resolved</option></select></label></div></div></header>
+  <section class="developer-investigation-summary"><article><span>Readiness</span><strong>${deployment ? `${deployment.available}/${deployment.desired}` : pod.status}</strong><small>${escapeHtml(deployment?.status || 'Runtime state')}</small></article><article><span>Restarts</span><strong>${relatedPods.reduce((sum,item)=>sum+Number(item.restarts||0),0)}</strong><small>Across scoped pods</small></article><article><span>Log signals</span><strong>${relatedPods.reduce((sum,item)=>sum+Number(data.analysis?.[item.name]?.counts?.errors||0),0)}</strong><small>${groups.length} grouped signatures</small></article><article><span>URL impact</span><strong>${urls.filter(item=>['down','degraded'].includes(item.status)).length}</strong><small>${urls.length} related endpoint${urls.length===1?'':'s'}</small></article></section>
+  <div class="developer-investigation-grid"><section><div class="investigation-block-heading"><div><p class="eyebrow">PROBLEM & SCOPE</p><h3>Current operational assessment</h3></div></div><p class="investigation-assessment">${escapeHtml(analysis.findings?.[0] || 'No critical pattern is present in the latest sample.')}</p><dl class="investigation-metadata"><div><dt>Selected pod</dt><dd>${escapeHtml(pod.name)}</dd></div><div><dt>Image</dt><dd>${escapeHtml(deployment?.image || pod.image || 'Unavailable')}</dd></div><div><dt>Environment</dt><dd>${escapeHtml(urls[0]?.environment?.toUpperCase() || pod.namespace || 'Not mapped')}</dd></div><div><dt>Captured evidence</dt><dd>${captures.length}</dd></div></dl><div class="scoped-pods">${relatedPods.map(item=>`<button data-developer-pod="${escapeHtml(item.name)}"><span class="${severityClass(item.risk)}">${escapeHtml(item.status)}</span><b>${escapeHtml(item.name)}</b><small>${item.restarts} restart${item.restarts===1?'':'s'}</small></button>`).join('')}</div></section>
+  <section><div class="investigation-block-heading"><div><p class="eyebrow">GROUPED ERRORS</p><h3>Repeated signatures</h3></div><button data-developer-open-logs>Open pod logs</button></div>${groups.length?`<div class="workspace-error-groups">${groups.map(group=>{const location=sourceCodeContext(image,group.signature);return `<article><b>${escapeHtml(group.signature)}</b><p>${group.count} occurrences · ${group.pods.size} pods</p><small>${escapeHtml([...group.pods].join(', '))}</small>${location?.exact?`<a class="error-source-link" href="${escapeHtml(location.url)}" target="_blank" rel="noopener noreferrer">Open ${escapeHtml(location.file)}:${escapeHtml(location.line)} ↗</a>`:''}</article>`;}).join('')}</div>`:'<p class="empty">No error or warning signature in the available scoped logs.</p>'}</section>
+  <section><div class="investigation-block-heading"><div><p class="eyebrow">INCIDENT TIMELINE</p><h3>Changes and evidence</h3></div></div>${events.length?`<ol class="workspace-timeline">${events.map(item=>`<li><i></i><div><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.detail||'Operational event')}</p><small>${new Date(Number(item.timestamp)*1000).toLocaleString()}</small></div></li>`).join('')}</ol>`:'<p class="empty">No related transition in the selected history window.</p>'}</section>
+  <section><div class="investigation-block-heading"><div><p class="eyebrow">RELEASE IMPACT</p><h3>Before / after deployment</h3></div></div>${comparison?`<div class="workspace-release ${comparison.status}"><span>${escapeHtml(comparison.status)}</span><code>${escapeHtml(comparison.previous_image||'No baseline')}</code><i>→</i><code>${escapeHtml(comparison.current_image||'Unavailable')}</code><p>${comparison.deltas?`Errors ${comparison.deltas.errors>=0?'+':''}${comparison.deltas.errors}; restarts ${comparison.deltas.restarts>=0?'+':''}${comparison.deltas.restarts}; readiness ${comparison.deltas.ready_percent>=0?'+':''}${comparison.deltas.ready_percent}%`:'Collecting enough baseline data for comparison.'}</p></div>`:'<p class="empty">No matching release comparison is available yet.</p>'}</section></div>
+  <section class="incident-replay"><header><div><p class="eyebrow">INCIDENT REPLAY</p><h3>See the incident unfold</h3><p>Deployment, runtime, log, alert, URL, and recovery evidence in one ordered sequence.</p></div><div class="incident-replay-controls"><button type="button" data-replay-previous ${incidentReplayIndex === 0 ? 'disabled' : ''}>← Previous</button><button type="button" class="primary" data-replay-play ${replay.length < 2 ? 'disabled' : ''}>${incidentReplayTimer ? 'Pause replay' : '▶ Replay'}</button><button type="button" data-replay-next ${incidentReplayIndex >= replay.length - 1 ? 'disabled' : ''}>Next →</button></div></header>${replay.length ? `<div class="incident-replay-stage"><div class="replay-rail">${replay.map((item,index)=>`<button type="button" class="${index === incidentReplayIndex ? 'active' : ''} ${escapeHtml(item.severity)}" data-replay-step="${index}" title="${escapeHtml(item.title)}"><i></i><span>${new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span></button>`).join('')}</div><article class="replay-active ${escapeHtml(replayActive.severity)}"><div class="replay-kind"><span>${escapeHtml(replayActive.kind)}</span><time>${new Date(replayActive.timestamp).toLocaleString()}</time></div><h4>${escapeHtml(replayActive.title)}</h4><p>${escapeHtml(replayActive.detail)}</p><small>${escapeHtml(replayActive.source)}</small><b>Step ${incidentReplayIndex + 1} of ${replay.length}</b></article></div>` : '<p class="empty">No timestamped evidence is available for replay yet.</p>'}</section>
+  <section class="investigation-links"><div><p class="eyebrow">COLLABORATION</p><h3>Share and continue in code</h3><p>Share this exact saved investigation or open the source version associated with the deployed image.</p></div><div class="investigation-link-actions">${workspace ? '<button type="button" data-developer-share>Copy investigation link</button>' : '<button type="button" disabled>Save to enable sharing</button>'}${source ? `<a href="${escapeHtml(source.url)}" target="_blank" rel="noopener noreferrer">Open source at ${escapeHtml(String(source.ref).slice(0, 12))} ↗</a><small>${source.origin === 'configured' ? 'Configured deployed commit' : source.origin === 'image' ? 'Commit inferred from image tag' : 'Default branch—deployed commit unavailable'}</small>` : '<span class="source-link-unavailable"><b>Source-code link not configured</b><small>Set SOURCE_REPOSITORY_URL and, preferably, SOURCE_COMMIT_SHA.</small></span>'}</div></section>
+  <section class="investigation-notes"><div><p class="eyebrow">INVESTIGATION RECORD</p><h3>Developer notes and decision</h3></div><textarea id="developer-investigation-note" maxlength="1000" placeholder="Observation, impact, decision, owner, or next step">${escapeHtml(workspace?.note||'')}</textarea><div><button data-developer-save-note>Save investigation</button><button data-developer-export>Export evidence JSON</button></div></section>`;
+  target.querySelectorAll('[data-developer-pod]').forEach(button=>button.addEventListener('click',()=>{developerInvestigationPod=button.dataset.developerPod;renderDeveloperInvestigation();}));
+  target.querySelector('#developer-investigation-pod-switch').addEventListener('change', event => openDeveloperInvestigation(event.target.value));
+  target.querySelector('[data-developer-all-pods]').addEventListener('click', () => { developerInvestigationPod = null; developerInvestigationWorkspace = null; incidentReplayIndex = -1; if (incidentReplayTimer) { clearInterval(incidentReplayTimer); incidentReplayTimer = null; } const url = new URL(window.location.href); url.searchParams.delete('investigation'); url.hash = 'developer-investigation'; window.history.replaceState(null, '', url); renderDeveloperInvestigationLanding(); });
+  target.querySelector('[data-developer-share]')?.addEventListener('click', async event => { const link = investigationShareUrl(workspace.id); try { await navigator.clipboard.writeText(link); event.target.textContent = 'Link copied'; } catch { window.prompt('Copy investigation link', link); } });
+  target.querySelectorAll('[data-replay-step]').forEach(button => button.addEventListener('click', () => { incidentReplayIndex = Number(button.dataset.replayStep); if (incidentReplayTimer) { clearInterval(incidentReplayTimer); incidentReplayTimer = null; } renderDeveloperInvestigation(); }));
+  target.querySelector('[data-replay-previous]')?.addEventListener('click', () => { incidentReplayIndex = Math.max(0, incidentReplayIndex - 1); renderDeveloperInvestigation(); });
+  target.querySelector('[data-replay-next]')?.addEventListener('click', () => { incidentReplayIndex = Math.min(replay.length - 1, incidentReplayIndex + 1); renderDeveloperInvestigation(); });
+  target.querySelector('[data-replay-play]')?.addEventListener('click', () => { if (incidentReplayTimer) { clearInterval(incidentReplayTimer); incidentReplayTimer = null; renderDeveloperInvestigation(); return; } incidentReplayIndex = 0; incidentReplayTimer = setInterval(() => { if (incidentReplayIndex >= replay.length - 1) { clearInterval(incidentReplayTimer); incidentReplayTimer = null; renderDeveloperInvestigation(); return; } incidentReplayIndex += 1; renderDeveloperInvestigation(); }, 1400); renderDeveloperInvestigation(); });
+  target.querySelector('[data-developer-open-logs]').addEventListener('click',()=>{logExplorerPodName=developerInvestigationPod;logExplorerSelectedIndex=undefined;window.history.replaceState(null,'','#log-explorer-panel');setWorkspacePage('logs');renderLogExplorer();window.scrollTo({top:0,behavior:'smooth'});} );
+  target.querySelector('[data-developer-save-note]').addEventListener('click',async()=>{if(!workspace)return;const response=await fetch(`/api/incident-workspaces/${encodeURIComponent(workspace.id)}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:target.querySelector('#developer-investigation-status').value,note:target.querySelector('#developer-investigation-note').value})});if(response.ok){developerInvestigationWorkspace=(await response.json()).workspace;renderDeveloperInvestigation();}});
+  target.querySelector('[data-developer-export]').addEventListener('click',()=>{const evidence={exported_at:new Date().toISOString(),workspace,pod,deployment,related_pods:relatedPods,analysis,error_groups:groups.map(group=>({...group,pods:[...group.pods],levels:[...group.levels]})),events,comparison,urls,captured_evidence:captures};const link=Object.assign(document.createElement('a'),{href:URL.createObjectURL(new Blob([JSON.stringify(evidence,null,2)],{type:'application/json'})),download:`${deployment?.name||pod.name}-investigation.json`});link.click();URL.revokeObjectURL(link.href);});
 }
 
 function renderIncidentWorkspaces() {
@@ -478,7 +723,7 @@ function renderWorkloads(inventory) {
   const ready = workloads.filter(item => item.status === 'Ready' || item.status === 'Completed').length;
   const attention = workloads.filter(item => item.status !== 'Ready' && item.status !== 'Completed').length;
   const exposed = workloads.filter(item => item.exposed).length;
-  document.querySelector('#workload-health-content').innerHTML = workloads.length ? `<div class="workload-health-metric"><span>Deployments</span><strong>${workloads.length}</strong><small>monitored workloads</small></div><div class="workload-health-metric"><span>Ready</span><strong>${ready}</strong><small>healthy or completed</small></div><div class="workload-health-metric"><span>Needs attention</span><strong>${attention}</strong><small>not ready workloads</small></div><div class="workload-health-metric"><span>Exposed services</span><strong>${exposed}</strong><small>externally reachable</small></div>` : '<p class="empty">Deployment health appears when workload inventory is connected.</p>';
+  document.querySelector('#workload-health-content').innerHTML = workloads.length ? `<div class="workload-health-metric"><span>Deployments</span><strong>${workloads.length}</strong><small>monitored workloads</small></div><div class="workload-health-metric"><span>Healthy / completed</span><strong>${ready}</strong><small>ready workloads and finished jobs</small></div><div class="workload-health-metric"><span>Needs attention</span><strong>${attention}</strong><small>not ready workloads</small></div><div class="workload-health-metric"><span>Exposed services</span><strong>${exposed}</strong><small>externally reachable</small></div>` : '<p class="empty">Deployment health appears when workload inventory is connected.</p>';
   const query = deploymentSearch.trim().toLowerCase();
   const healthRank = item => item.status === 'Ready' || item.status === 'Completed' ? 0 : 1;
   const matching = workloads.filter(item => (!query || `${item.name} ${item.type} ${item.image}`.toLowerCase().includes(query)) && (deploymentFilter === 'all' || deploymentFilter === 'attention' && item.status !== 'Ready' && item.status !== 'Completed' || deploymentFilter === 'ready' && item.status === 'Ready' || deploymentFilter === 'exposed' && item.exposed || deploymentFilter === 'completed' && item.status === 'Completed')).sort((left, right) => deploymentSort === 'name' ? left.name.localeCompare(right.name) : healthRank(right) - healthRank(left) || left.name.localeCompare(right.name));
@@ -489,7 +734,7 @@ function renderWorkloads(inventory) {
   const views = savedWorkloadViews();
   document.querySelector('#deployment-list-controls').innerHTML = `<div class="inventory-filters"><label>Find deployment <input id="deployment-search" value="${escapeHtml(deploymentSearch)}" placeholder="Name, type, or image"></label><button type="button" data-deployment-search>Search</button><label>Show <select id="deployment-filter"><option value="all" ${deploymentFilter === 'all' ? 'selected' : ''}>All deployments</option><option value="attention" ${deploymentFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="ready" ${deploymentFilter === 'ready' ? 'selected' : ''}>Ready</option><option value="exposed" ${deploymentFilter === 'exposed' ? 'selected' : ''}>Exposed</option><option value="completed" ${deploymentFilter === 'completed' ? 'selected' : ''}>Completed</option></select></label><label>Order <select id="deployment-sort"><option value="attention" ${deploymentSort === 'attention' ? 'selected' : ''}>Needs attention first</option><option value="name" ${deploymentSort === 'name' ? 'selected' : ''}>Name A–Z</option></select></label><label>Saved view <select id="deployment-view"><option value="">Choose a view</option>${views.map((view, index) => `<option value="${index}">${escapeHtml(view.name)}</option>`).join('')}</select></label><button type="button" data-deployment-view-save>Save view</button></div><div class="inventory-pagination"><span>${matching.length ? `Showing ${start + 1}–${Math.min(start + deploymentPageSize, matching.length)} of ${matching.length}` : 'No matching deployments'} · ${workloads.length} total</span><label>Rows <select id="deployment-page-size"><option value="25" ${deploymentPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${deploymentPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${deploymentPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-deployment-prev ${deploymentPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${deploymentPage} of ${pages}</span><button type="button" data-deployment-next ${deploymentPage === pages ? 'disabled' : ''}>Next</button></div>`;
   const changed = new Set((observabilityData.events || []).filter(event => event.kind === 'deployment').map(event => event.pod));
-  target.innerHTML = visible.length ? visible.map(workload => `<tr><td><button class="deployment-link" data-deployment-open="${escapeHtml(workload.name)}">${escapeHtml(workload.name)}<small>${changed.has(workload.name) ? 'Changed recently · inspect →' : 'Inspect resources →'}</small></button></td><td>${escapeHtml(workload.type)}</td><td>${workload.available}/${workload.desired} available</td><td><small>${escapeHtml(workload.image || 'Not available')}</small></td><td>${workload.exposed ? 'Exposed' : 'Internal'}</td><td><span class="${severityClass(workload.status === 'Ready' || workload.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(workload.status)}</span></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No deployments match the selected filter.</td></tr>';
+  target.innerHTML = visible.length ? visible.map(workload => `<tr><td><button class="deployment-link" data-deployment-open="${escapeHtml(workload.name)}">${escapeHtml(workload.name)}<small>${changed.has(workload.name) ? 'Changed recently · inspect →' : 'Inspect resources →'}</small></button></td><td>${escapeHtml(workload.type)}</td><td>${workload.status === 'Completed' ? 'Completed' : `${workload.available}/${workload.desired} available`}</td><td><small>${escapeHtml(workload.image || 'Not available')}</small></td><td>${workload.exposed ? 'Exposed' : 'Internal'}</td><td><span class="${severityClass(workload.status === 'Ready' || workload.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(workload.status)}</span></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No deployments match the selected filter.</td></tr>';
   document.querySelectorAll('[data-deployment-open]').forEach(button => button.addEventListener('click', () => { selectedDeploymentName = button.dataset.deploymentOpen; selectedDeploymentResource = undefined; renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
   document.querySelector('[data-deployment-search]').addEventListener('click', () => { deploymentSearch = document.querySelector('#deployment-search').value; deploymentPage = 1; renderWorkloads(inventory); });
   // Keep the draft through the automatic telemetry refresh; filtering still
@@ -572,6 +817,64 @@ function downloadLogRecords(records, format) {
   URL.revokeObjectURL(url);
 }
 
+function explainLogEvent(record, records, podName) {
+  if (!record) return '';
+  const text = String(record.message || record.raw || '');
+  const normalized = text.toLowerCase();
+  const rules = [
+    { test: /oomkilled|out of memory|memory pressure/, title: 'The application ran out of available memory', impact: 'The container may be terminated or become unavailable while it restarts.', cause: 'Observed memory-exhaustion wording in the selected log.', next: 'Review memory usage, container limits, restart history, and recent traffic or release changes.' },
+    { test: /connection refused|could not connect|connection reset/, title: 'A required service connection failed', impact: 'Requests depending on the downstream service may fail.', cause: 'The destination rejected or reset the application connection.', next: 'Check the downstream service health, address, port, network policy, and recent configuration changes.' },
+    { test: /timeout|timed out|deadline exceeded/, title: 'An operation exceeded its allowed time', impact: 'Users may experience slow or failed requests.', cause: 'A timeout is directly observed; the slow component is not confirmed by this log alone.', next: 'Use the request ID and nearby logs to identify the slow dependency, then compare latency and capacity.' },
+    { test: /\b5\d\d\b|internal server error|bad gateway|service unavailable/, title: 'The application returned a server-side failure', impact: 'One or more application requests may have failed.', cause: 'A server-error response is present in the selected event.', next: 'Follow the request ID through nearby logs and check pod health, dependencies, and the latest deployment.' },
+    { test: /unauthorized|forbidden|authentication failed|access denied/, title: 'A request was rejected by access controls', impact: 'The affected user or service may not be able to complete the operation.', cause: 'Authentication or authorization failure wording is present.', next: 'Verify identity, role assignment, token validity, and recent access-policy changes without exposing credentials.' },
+    { test: /not found|\b404\b/, title: 'A requested resource could not be found', impact: 'The specific request cannot complete until the path or resource is corrected.', cause: 'A missing-resource response is present in the selected event.', next: 'Check the requested path or identifier and compare it with the deployed application routes.' },
+  ];
+  const matched = rules.find(rule => rule.test.test(normalized));
+  const isProblem = ['critical', 'error', 'warn'].includes(record.level);
+  const explanation = matched || (isProblem ? { title: 'The application reported an operational error', impact: 'Impact cannot be confirmed from this single event.', cause: 'The selected log is classified as an error or warning.', next: 'Review nearby log context, request identifiers, pod health, and recent deployment changes.' } : { title: 'Informational application event', impact: 'No user impact is indicated by this event.', cause: 'The event is informational.', next: 'No action is required unless it correlates with another active signal.' });
+  const signature = normalized.replace(/\b\d+\b/g, '#').replace(/[a-f0-9]{8,}/g, '#');
+  const occurrences = records.filter(item => String(item.message || '').toLowerCase().replace(/\b\d+\b/g, '#').replace(/[a-f0-9]{8,}/g, '#') === signature).length;
+  const deployment = (data?.deployments || []).find(item => (item.resources || []).some(resource => resource.pod?.name === podName));
+  const technical = isDeveloperOrAdministrator() ? `<details><summary>Technical details</summary><dl><div><dt>Pod</dt><dd>${escapeHtml(podName)}</dd></div><div><dt>Timestamp</dt><dd>${escapeHtml(record.timestamp || 'Not provided')}</dd></div><div><dt>Image</dt><dd>${escapeHtml(deployment?.image || data?.pods?.find(pod => pod.name === podName)?.image || 'Not available')}</dd></div>${Object.entries(record.fields || {}).slice(0, 8).map(([key,value]) => `<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl><pre>${escapeHtml(record.raw || record.message || '')}</pre></details>` : '';
+  return `<section class="log-explanation ${isProblem ? 'attention' : 'informational'}"><header><div><span>${isProblem ? 'UNDERSTAND THIS ERROR' : 'EVENT EXPLANATION'}</span><h3>${escapeHtml(explanation.title)}</h3></div><b>${occurrences} occurrence${occurrences === 1 ? '' : 's'}</b></header><div class="log-explanation-grid"><div><span>What it may affect</span><p>${escapeHtml(explanation.impact)}</p></div><div><span>Evidence-based interpretation</span><p>${escapeHtml(explanation.cause)}</p></div><div><span>Recommended check</span><p>${escapeHtml(explanation.next)}</p></div></div><p class="log-fact-note"><b>Observed fact:</b> ${escapeHtml(text.slice(0, 280))}</p>${technical}</section>`;
+}
+
+function logSignature(message) {
+  return String(message || '').toLowerCase().replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, '[uuid]').replace(/\b[0-9a-f]{8,}\b/gi, '[id]').replace(/\b\d+(?:\.\d+){1,3}\b/g, '[number]').replace(/\b\d+\b/g, '#').replace(/\s+/g, ' ').trim().slice(0, 220);
+}
+
+function correlationIds(record) {
+  const ids = new Set();
+  const accepted = /^(request|request_id|requestid|x-request-id|trace|trace_id|traceid|correlation|correlation_id|correlationid)$/i;
+  Object.entries(record?.fields || {}).forEach(([key, value]) => { if (accepted.test(key.replaceAll('.', '_')) && String(value).length >= 4) ids.add(String(value)); });
+  const raw = String(record?.raw || record?.message || '');
+  for (const match of raw.matchAll(/\b(?:request[_-]?id|trace[_-]?id|correlation[_-]?id|x-request-id)[=:"'\s]+([a-zA-Z0-9_.:-]{4,128})/gi)) ids.add(match[1]);
+  return [...ids];
+}
+
+function groupedErrorSignatures(recordFilter = () => true) {
+  const groups = new Map();
+  Object.entries(data?.structured_logs || {}).forEach(([pod, records]) => records.filter(record => ['critical', 'error', 'warn'].includes(record.level) && recordFilter(record, pod)).forEach(record => {
+    const signature = logSignature(record.message);
+    const group = groups.get(signature) || { signature, count: 0, pods: new Set(), first: record.timestamp, last: record.timestamp, example: record, examplePod: pod, levels: new Set() };
+    group.count += 1; group.pods.add(pod); group.levels.add(record.level);
+    if (record.timestamp && (!group.first || Date.parse(record.timestamp) < Date.parse(group.first))) group.first = record.timestamp;
+    if (record.timestamp && (!group.last || Date.parse(record.timestamp) > Date.parse(group.last))) group.last = record.timestamp;
+    groups.set(signature, group);
+  }));
+  return [...groups.values()].sort((left, right) => right.count - left.count).slice(0, 12);
+}
+
+function requestTraceHtml(selected) {
+  const ids = correlationIds(selected);
+  if (!ids.length) return '<section class="request-trace empty-trace"><div><p class="eyebrow">REQUEST TRACE</p><h3>No request or trace ID in this event</h3></div><p>Add a structured request_id, trace_id, or correlation_id field to application logs to enable cross-pod request tracing.</p></section>';
+  const id = ids[0];
+  const events = [];
+  Object.entries(data?.structured_logs || {}).forEach(([pod, records]) => records.forEach(record => { if (correlationIds(record).includes(id) || String(record.raw || '').includes(id)) events.push({ pod, record }); }));
+  events.sort((left, right) => Date.parse(left.record.timestamp || 0) - Date.parse(right.record.timestamp || 0));
+  return `<section class="request-trace"><header><div><p class="eyebrow">REQUEST TRACE</p><h3>${escapeHtml(id)}</h3></div><span>${events.length} event${events.length === 1 ? '' : 's'} · ${new Set(events.map(item => item.pod)).size} pod${new Set(events.map(item => item.pod)).size === 1 ? '' : 's'}</span></header><div>${events.slice(0, 50).map((item, index) => `<article><i>${index + 1}</i><div><b>${escapeHtml(item.pod)}</b><small>${escapeHtml(item.record.timestamp || `Entry ${item.record.index + 1}`)} · ${escapeHtml(item.record.level)}</small><p>${escapeHtml(item.record.message)}</p></div></article>`).join('')}</div></section>`;
+}
+
 function renderLogExplorer() {
   const target = document.querySelector('#log-explorer');
   if (!data?.pods?.length) {
@@ -581,7 +884,7 @@ function renderLogExplorer() {
   if (!data.pods.some(pod => pod.name === logExplorerPodName)) logExplorerPodName = data.pods[0].name;
   const records = data.structured_logs?.[logExplorerPodName] || [];
   if (!Number.isInteger(logExplorerSelectedIndex) || !records.some(record => record.index === logExplorerSelectedIndex)) logExplorerSelectedIndex = records.at(-1)?.index;
-  const rangeMs = { '5m': 5 * 60_000, '15m': 15 * 60_000, '1h': 60 * 60_000, '6h': 6 * 60 * 60_000 }[logExplorerRange];
+  const rangeMs = { '5m': 5 * 60_000, '15m': 15 * 60_000, '1h': 60 * 60_000, '6h': 6 * 60 * 60_000, '12h': 12 * 60 * 60_000, '24h': 24 * 60 * 60_000 }[logExplorerRange];
   const cutoff = rangeMs ? Date.now() - rangeMs : 0;
   const search = logExplorerSearch.trim().toLocaleLowerCase();
   const fieldSearch = logExplorerFieldSearch.trim().toLocaleLowerCase();
@@ -589,23 +892,45 @@ function renderLogExplorer() {
   if (!filteredRecords.some(record => record.index === logExplorerSelectedIndex)) logExplorerSelectedIndex = filteredRecords.at(-1)?.index;
   const selected = records.find(record => record.index === logExplorerSelectedIndex);
   const context = selected ? records.slice(Math.max(0, selected.index - logExplorerBefore), Math.min(records.length, selected.index + logExplorerAfter + 1)) : [];
+  const selectedExplanation = selected ? explainLogEvent(selected, records, logExplorerPodName) : '';
+  const selectedTrace = selected ? requestTraceHtml(selected) : '';
   const recent = filteredRecords.slice(-30).reverse();
   const severity = record => record.level === 'warn' ? 'warning' : record.level === 'error' || record.level === 'critical' ? 'critical' : 'healthy';
   const patternMap = new Map();
-  records.filter(record => ['error', 'critical'].includes(record.level)).forEach(record => {
+  filteredRecords.filter(record => ['error', 'critical'].includes(record.level)).forEach(record => {
     const pattern = record.message.replace(/\b[0-9a-f]{8,}\b/gi, '[id]').replace(/\b\d+(?:\.\d+){0,3}\b/g, '#').replace(/\b\d+\b/g, '#').slice(0, 160);
     const existing = patternMap.get(pattern) || { pattern, count: 0, latest: record.timestamp };
     existing.count += 1; existing.latest = record.timestamp || existing.latest; patternMap.set(pattern, existing);
   });
   const patterns = [...patternMap.values()].filter(item => item.count > 1).sort((a, b) => b.count - a.count).slice(0, 4);
   const queryOptions = savedLogQueries();
-  const errorCount = records.filter(record => ['error', 'critical'].includes(record.level)).length;
-  const warningCount = records.filter(record => record.level === 'warn').length;
-  const latestError = records.filter(record => ['error', 'critical'].includes(record.level)).at(-1)?.timestamp || 'None';
+  const errorCount = filteredRecords.filter(record => ['error', 'critical'].includes(record.level)).length;
+  const warningCount = filteredRecords.filter(record => record.level === 'warn').length;
+  const latestError = filteredRecords.filter(record => ['error', 'critical'].includes(record.level)).at(-1)?.timestamp || 'None';
   const dated = records.map(record => Date.parse(record.timestamp || '')).filter(Number.isFinite);
   const availableWindow = dated.length > 1 ? `${Math.max(0, Math.round((Math.max(...dated) - Math.min(...dated)) / 60000))} minute sampled window` : 'recent sampled log window';
   const sourceNote = data.mode === 'splunk' ? 'Splunk returns the configured lookback window.' : `This source currently provides a ${availableWindow}; longer selections only filter records available in this sample.`;
+  const errorGroups = groupedErrorSignatures(record => !rangeMs || (record.timestamp && Date.parse(record.timestamp) >= cutoff));
   target.innerHTML = `<section class="log-summary"><article><span>Errors</span><strong>${errorCount}</strong><small>Latest: ${escapeHtml(latestError)}</small></article><article><span>Warnings</span><strong>${warningCount}</strong><small>Current sampled window</small></article><article><span>Recurring patterns</span><strong>${patterns.length}</strong><small>Repeated error signatures</small></article><article><span>Available data</span><strong>${records.length}</strong><small>${escapeHtml(sourceNote)}</small></article></section><div class="log-control-bar"><label>Pod<select id="log-explorer-pod">${data.pods.map(pod => `<option value="${escapeHtml(pod.name)}" ${pod.name === logExplorerPodName ? 'selected' : ''}>${escapeHtml(pod.name)} · ${escapeHtml(pod.status)}</option>`).join('')}</select></label><label>Time range<select id="log-explorer-range"><option value="all" ${logExplorerRange === 'all' ? 'selected' : ''}>Available sample</option><option value="5m" ${logExplorerRange === '5m' ? 'selected' : ''}>Last 5 minutes</option><option value="15m" ${logExplorerRange === '15m' ? 'selected' : ''}>Last 15 minutes</option><option value="1h" ${logExplorerRange === '1h' ? 'selected' : ''}>Last hour</option><option value="6h" ${logExplorerRange === '6h' ? 'selected' : ''}>Last 6 hours</option></select></label><label>Severity<select id="log-explorer-level"><option value="all" ${logExplorerLevel === 'all' ? 'selected' : ''}>All events</option><option value="critical" ${logExplorerLevel === 'critical' ? 'selected' : ''}>Critical</option><option value="error" ${logExplorerLevel === 'error' ? 'selected' : ''}>Errors</option><option value="warn" ${logExplorerLevel === 'warn' ? 'selected' : ''}>Warnings</option><option value="info" ${logExplorerLevel === 'info' ? 'selected' : ''}>Information</option></select></label><label class="log-search">Search<input id="log-explorer-search" value="${escapeHtml(logExplorerSearch)}" placeholder="Error text, request ID, message…"></label><button data-log-apply-search>Search</button><button class="live-tail ${logExplorerLiveTail ? 'active' : ''}" data-log-live-tail>${logExplorerLiveTail ? '● Live tail on' : '○ Live tail paused'}</button></div><details class="advanced-log-filters"><summary>Advanced filter</summary><label>Structured field value<input id="log-explorer-field-search" value="${escapeHtml(logExplorerFieldSearch)}" placeholder="e.g. request_id, 500, timeout"></label><button type="button" data-log-apply-field>Apply filter</button></details><div class="log-action-bar"><label>Saved query<select id="log-saved-query"><option value="">Choose a saved query</option>${queryOptions.map((query, index) => `<option value="${index}">${escapeHtml(query.name)}</option>`).join('')}</select></label><button data-log-save-query>Save current query</button><label>Context<select id="log-context-before"><option value="5" ${logExplorerBefore === 5 ? 'selected' : ''}>5 before</option><option value="20" ${logExplorerBefore === 20 ? 'selected' : ''}>20 before</option><option value="100" ${logExplorerBefore === 100 ? 'selected' : ''}>100 before</option></select></label><label>Following<select id="log-context-after"><option value="0" ${logExplorerAfter === 0 ? 'selected' : ''}>None</option><option value="5" ${logExplorerAfter === 5 ? 'selected' : ''}>5 after</option><option value="20" ${logExplorerAfter === 20 ? 'selected' : ''}>20 after</option></select></label><span>${recent.length}/${records.length} records shown</span><button data-log-export="json">Export JSON</button><button data-log-export="csv">Export CSV</button></div><div class="log-explorer-grid"><div class="log-event-list"><div class="log-list-heading"><strong>${escapeHtml(logExplorerPodName)}</strong><small>${records.length} recent records</small></div>${recent.length ? recent.map(record => `<button class="log-event ${record.index === logExplorerSelectedIndex ? 'active' : ''}" data-log-explorer-index="${record.index}"><span class="${severityClass(severity(record))}">${escapeHtml(record.level)}</span><strong>${escapeHtml(record.timestamp || `Entry ${record.index + 1}`)}</strong><small>${escapeHtml(record.message)}</small></button>`).join('') : '<p class="empty">No matching logs for this filter.</p>'}</div><div class="log-json-view">${selected ? `<div class="log-list-heading"><strong>${logExplorerJsonOpen ? 'JSON context' : 'Selected log event'}</strong><small>${logExplorerJsonOpen ? `${Math.max(0, context.length - 1)} nearby events included` : 'Open as JSON for full details'}</small></div>${logExplorerJsonOpen ? `<pre class="large-log">${escapeHtml(JSON.stringify(context, null, 2))}</pre><button class="log-json-action" data-log-json-close>Show selected event</button>` : `<div class="log-preview"><span class="${severityClass(severity(selected))}">${escapeHtml(selected.level)}</span><p>${escapeHtml(selected.message)}</p><button class="log-json-action" data-log-json-open>Open JSON context</button></div>`}` : '<p class="empty">Choose a log event to inspect it.</p>'}</div></div><section class="pattern-panel"><div><p class="eyebrow">RECURRING ERROR PATTERNS</p><h3>Potential incident signals</h3></div>${patterns.length ? patterns.map(item => `<article><strong>${item.count} occurrences</strong><p>${escapeHtml(item.pattern)}</p><button data-pattern-filter="${escapeHtml(item.pattern)}">Filter</button><button data-pattern-alert="${escapeHtml(item.pattern)}">Create alert</button></article>`).join('') : '<p class="empty">No repeated error or critical pattern in the current sample.</p>'}</section>`;
+  const rangeSelector = target.querySelector('#log-explorer-range');
+  [['12h', 'Last 12 hours'], ['24h', 'Last 24 hours']].forEach(([value, label]) => {
+    const option = document.createElement('option'); option.value = value; option.textContent = label; option.selected = logExplorerRange === value; rangeSelector.append(option);
+  });
+  if (selectedExplanation) target.querySelector('.log-json-view')?.insertAdjacentHTML('afterbegin', `${selectedExplanation}${selectedTrace}`);
+  target.querySelector('.pattern-panel')?.insertAdjacentHTML('beforebegin', `<section class="error-signature-panel"><header><div><p class="eyebrow">GROUPED ERROR SIGNATURES</p><h3>Repeated failures across available pods</h3></div><small>${errorGroups.length} normalized group${errorGroups.length === 1 ? '' : 's'} · current available samples</small></header>${errorGroups.length ? `<div>${errorGroups.map((group, index) => `<article><span class="signature-rank">${index + 1}</span><div><b>${escapeHtml(group.signature)}</b><p>${group.count} occurrence${group.count === 1 ? '' : 's'} across ${group.pods.size} pod${group.pods.size === 1 ? '' : 's'} · ${escapeHtml([...group.levels].join(', '))}</p><small>${escapeHtml([...group.pods].slice(0, 5).join(', '))}${group.pods.size > 5 ? ` +${group.pods.size - 5} more` : ''}</small></div><div><small>${escapeHtml(group.first || 'Time unavailable')} → ${escapeHtml(group.last || 'Time unavailable')}</small><button type="button" data-error-group-pod="${escapeHtml(group.examplePod)}" data-error-group-index="${group.example.index}">Open example</button></div></article>`).join('')}</div>` : '<p class="empty">No warning, error, or critical signatures in the available samples.</p>'}</section>`);
+  target.querySelectorAll('.error-signature-panel article').forEach((article, index) => {
+    if (!isDeveloperOrAdministrator() || !errorGroups[index]) return;
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = 'Developer workspace'; button.dataset.errorGroupWorkspace = errorGroups[index].examplePod;
+    article.lastElementChild?.append(button);
+  });
+  target.querySelectorAll('[data-error-group-workspace]').forEach(button => button.addEventListener('click', () => openDeveloperInvestigation(button.dataset.errorGroupWorkspace)));
+  target.querySelectorAll('[data-error-group-pod]').forEach(button => button.addEventListener('click', () => {
+    logExplorerPodName = button.dataset.errorGroupPod;
+    logExplorerSelectedIndex = Number(button.dataset.errorGroupIndex);
+    logExplorerJsonOpen = false;
+    renderLogExplorer();
+  }));
   document.querySelector('#log-explorer-pod').addEventListener('change', event => {
     logExplorerPodName = event.target.value;
     logExplorerSelectedIndex = undefined;
@@ -744,6 +1069,8 @@ async function updateAlertLifecycle(key, status, button) {
 
 function renderAlerts(alerts) {
   const target = document.querySelector('#alerts');
+  const action = document.querySelector('[data-alert-act]');
+  if (action) { action.disabled = !alerts.length; action.textContent = alerts.length ? 'Investigate top alert' : 'No action needed'; }
   const delivery = '<p class="muted">Notification delivery is not connected. Alerts are evaluated and retained locally; connect an approved Teams or email destination before relying on external notifications.</p>';
   const groups = new Map();
   alerts.sort((a, b) => severityRank[b.severity] - severityRank[a.severity]).forEach(alert => { const list = groups.get(alert.pod) || []; list.push(alert); groups.set(alert.pod, list); });
@@ -1046,8 +1373,8 @@ function selectPod(name, resetTab = true) {
   const forecastHeadline = forecast.available ? `${forecast.forecast_percent}%` : `${forecast.current_percent}%`;
   const forecastLabel = forecast.available ? 'projected memory usage in 15 minutes' : 'live memory usage';
   const forecastDetail = forecast.available ? `${forecast.forecast_memory_mib} MiB projected from ${forecast.samples} Prometheus readings` : `${forecast.current_memory_mib} MiB of ${forecast.limit_mib} MiB`;
-  document.querySelector('#forecast').innerHTML = `<div class="forecast ${forecast.available ? forecast.forecast_risk : forecast.risk}"><div><strong>${forecastHeadline}</strong><span>${forecastLabel}</span></div><p>${forecastDetail} · ${escapeHtml(forecast.message)}</p></div>${memoryTimeline(forecast)}`;
-  document.querySelector('#analysis').innerHTML = `<span class="${severityClass(analysis.severity)}">${analysis.severity}</span><ul>${analysis.findings.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul><p class="muted">Errors ${analysis.counts.errors} · Warnings ${analysis.counts.warnings} · OOM ${analysis.counts.oom_events}</p><p class="muted">Use Centralised Log Explorer for searchable, masked JSON log records and context.</p>`;
+  document.querySelector('#forecast').innerHTML = `<p class="selected-data-scope">Selected pod: <b>${escapeHtml(pod.name)}</b></p><div class="forecast ${forecast.available ? forecast.forecast_risk : forecast.risk}"><div><strong>${forecastHeadline}</strong><span>${forecastLabel}</span></div><p>${forecastDetail} · ${escapeHtml(forecast.message)}</p></div>${memoryTimeline(forecast)}`;
+  document.querySelector('#analysis').innerHTML = `<p class="selected-data-scope">Selected pod: <b>${escapeHtml(pod.name)}</b></p><span class="${severityClass(analysis.severity)}">${analysis.severity}</span><ul>${analysis.findings.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul><p class="muted">Errors ${analysis.counts.errors} · Warnings ${analysis.counts.warnings} · OOM ${analysis.counts.oom_events}</p><p class="muted">Use Centralised Log Explorer for searchable, masked JSON log records and context.</p>`;
   renderDetails(pod, logs, records);
 }
 
@@ -1060,10 +1387,13 @@ async function load(preservePausedLogs = false) {
     sourceHealth = await readinessResponse.json().catch(() => ({ status: 'checking', collector: {} }));
     if (!response.ok) throw new Error(payload.detail || 'Live telemetry is unavailable.');
     data = payload;
+    await restoreSharedInvestigation();
     acknowledgedAlerts = data.alert_acknowledgements || {};
     alertHistory = alertHistoryPayload.events || [];
     renderSummary(data.summary); renderPlatformHealth(data.summary, data.alerts); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); if (!preservePausedLogs || logExplorerLiveTail) renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertRules(data.alert_rules || []);
     document.querySelector('#mode').textContent = data.mode === 'docker' ? 'Local Docker connected' : data.mode === 'splunk' ? 'Splunk external source' : 'Kubernetes connected';
+    document.querySelector('#connection').textContent = 'Live';
+    document.querySelector('#connection').classList.remove('disconnected');
     const collectedAt = data.collector?.last_collected || data.generated_at;
     const ageSeconds = Math.max(0, Math.round((Date.now() - new Date(collectedAt).getTime()) / 1000));
     const freshness = ageSeconds < 15 ? `Collected ${ageSeconds}s ago` : `Last collected ${Math.round(ageSeconds / 60)}m ago`;
@@ -1072,6 +1402,7 @@ async function load(preservePausedLogs = false) {
     document.body.classList.remove('data-refreshed'); requestAnimationFrame(() => document.body.classList.add('data-refreshed')); setTimeout(() => document.body.classList.remove('data-refreshed'), 900);
     if (!data.pods.length) throw new Error('No containers match the configured MindSpark prefix.');
     selectPod(data.pods.some(pod => pod.name === selectedPodName) ? selectedPodName : data.pods[0].name, false);
+    renderDeveloperInvestigation();
   } catch (error) {
     document.querySelector('#summary').innerHTML = `<article class="metric"><strong>Live containers not connected</strong><span>${escapeHtml(error.message)}</span></article>`;
     document.querySelector('#workloads').innerHTML = '';
@@ -1083,6 +1414,8 @@ async function load(preservePausedLogs = false) {
     document.querySelector('#forecast').textContent = 'No live container selected.';
     document.querySelector('#analysis').textContent = 'No live logs available.';
     document.querySelector('#mode').textContent = 'Connection required';
+    document.querySelector('#connection').textContent = 'Unavailable';
+    document.querySelector('#connection').classList.add('disconnected');
     document.querySelector('#operations-trends').innerHTML = '<p class="empty">Operational trends are unavailable until live monitoring is connected.</p>';
     document.querySelector('#slo-health').textContent = 'No telemetry health calculation is available.';
     document.querySelector('#capacity-ranking').textContent = 'No capacity data is available.';
@@ -1094,6 +1427,9 @@ async function load(preservePausedLogs = false) {
 }
 
 function startPulseOps() {
+ensureDeveloperInvestigationPage();
+const navigationHelp = { '#overview': 'Platform summary and what needs attention', '#observability-center': 'Trends, availability, capacity, dependencies, and events', '#deployment-readiness': 'Deployments, services, pods, images, and readiness', '#log-explorer-panel': 'Search and inspect retained pod logs', '#alert-center': 'Active alerts, history, evidence, and rules', '#developer-investigation': 'Correlated developer investigation workspace', '#intelligence-center': 'Evidence-led automated investigation and optional AI', '#url-monitoring': 'Environment URL availability monitoring', '#data-sources': 'Administrator monitoring-source configuration', '#access-center': 'Administrator users, roles, and audit history' };
+document.querySelectorAll('.workspace-nav a').forEach(link => { link.title = navigationHelp[link.getAttribute('href')] || link.textContent.trim(); });
 document.querySelector('#refresh').addEventListener('click', load);
 function applyTheme(theme) {
   const dark = theme === 'dark';
@@ -1134,7 +1470,11 @@ if (!isAdministrator()) document.querySelector('.header-more').hidden = true;
 if (!isDeveloperOrAdministrator()) {
   document.querySelector('a[href="#log-explorer-panel"]').hidden = true;
   document.querySelector('a[href="#observability-center"]').hidden = true;
+  document.querySelector('a[href="#url-monitoring"]').hidden = true;
 }
+document.querySelector('#url-monitor-refresh').addEventListener('click', loadUrlMonitors);
+document.querySelector('#url-monitor-search').addEventListener('input', event => { urlMonitorSearch = event.target.value; renderUrlMonitors(); });
+document.querySelector('#url-monitor-status').addEventListener('change', event => { urlMonitorStatus = event.target.value; renderUrlMonitors(); });
 if (isAdministrator()) {
   loadAccessUsers();
   loadAuditEvents();
@@ -1170,7 +1510,7 @@ document.querySelector('[data-alert-act]').addEventListener('click', () => {
 document.body.dataset.audience = 'operator';
 
 function pageFromTarget(targetId) {
-  const page = targetId === 'observability-center' ? 'operations' : targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'log-explorer-panel' ? 'logs' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access-center' ? 'access' : targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alert-center' ? 'alerts' : 'overview';
+  const page = targetId === 'observability-center' ? 'operations' : targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access-center' ? 'access' : targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alert-center' ? 'alerts' : 'overview';
   if ((page === 'access' || page === 'data-sources') && !isAdministrator()) return 'overview';
   if ((page === 'logs' || page === 'operations') && !isDeveloperOrAdministrator()) return 'overview';
   return page;
@@ -1180,7 +1520,7 @@ function setWorkspacePage(page) {
   document.body.dataset.page = page;
   document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab => {
     const targetId = (tab.getAttribute('href') || '#overview').slice(1);
-    const selected = pageFromTarget(targetId) === page;
+    const selected = pageFromTarget(targetId) === page && !(page === 'overview' && targetId !== 'overview');
     tab.classList.toggle('active', selected);
     if (selected) tab.setAttribute('aria-current', 'page'); else tab.removeAttribute('aria-current');
   });
@@ -1198,6 +1538,8 @@ document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab 
 window.addEventListener('hashchange', syncWorkspacePage);
 syncWorkspacePage();
 Promise.all([loadSplunkSettings(), loadPrometheusSettings()]).then(renderDataSources);
+loadUrlMonitors();
+loadCorrelationIntelligence();
 // Keep the navigation sequence operational: workloads, pods, then centralised logs.
 const dashboardLayout = document.querySelector('.layout');
 dashboardLayout.insertBefore(document.querySelector('#log-explorer-panel'), document.querySelector('#container-monitoring').nextElementSibling);
@@ -1210,6 +1552,7 @@ load();
 // Dashboard health refreshes independently. When Live tail is paused, the selected
 // log view stays still while alerts, capacity, and workload status continue updating.
 setInterval(() => load(true), 30000);
+setInterval(loadCorrelationIntelligence, 30000);
 }
 
 async function checkAuthentication() {
@@ -1224,7 +1567,7 @@ async function checkAuthentication() {
   if (!result.user) return;
   currentUser = result.user;
   loginScreen.classList.add('hidden');
-  document.querySelector('#current-user').textContent = `Signed in: ${result.user.email}`;
+  document.querySelector('#current-user').textContent = `Signed in: ${result.user.email} · ${roleLabel(result.user.role)}`;
   startPulseOps();
 }
 
@@ -1264,7 +1607,7 @@ document.querySelector('#login-form').addEventListener('submit', async event => 
   message.classList.remove('error');
   currentUser = result.user;
   document.querySelector('#login-screen').classList.add('hidden');
-  document.querySelector('#current-user').textContent = `Signed in: ${result.user.email}`;
+  document.querySelector('#current-user').textContent = `Signed in: ${result.user.email} · ${roleLabel(result.user.role)}`;
   startPulseOps();
 });
 

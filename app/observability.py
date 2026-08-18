@@ -707,8 +707,8 @@ def _assistant_actions(evidence: list[dict[str, str]], current_pod: str | None, 
 
 
 def _pod_name_terms(question_terms: set[str]) -> set[str]:
-    ignored = {"pod", "pods", "running", "run", "many", "count", "number", "named", "called", "there", "any", "got", "is", "issue", "issues", "problem", "problems", "health", "healthy", "unhealthy", "check", "status", "needs", "need", "attention", "has", "have", "log", "logs", "string", "text", "message", "present", "contain", "contains", "find", "search", "for", "in", "from", "within", "critical", "criticle", "warning", "warnings", "error", "errors"}
-    return question_terms - ignored
+    ignored = {"pod", "pods", "application", "applications", "app", "apps", "about", "particular", "name", "were", "running", "run", "many", "count", "number", "named", "called", "there", "any", "got", "last", "hour", "hours", "day", "days", "today", "yesterday", "recent", "is", "issue", "issues", "problem", "problems", "health", "healthy", "unhealthy", "check", "status", "needs", "need", "attention", "has", "have", "log", "logs", "string", "text", "message", "present", "contain", "contains", "find", "search", "for", "in", "from", "within", "critical", "criticle", "warning", "warnings", "error", "errors"}
+    return {term for term in question_terms - ignored if not term.isdigit()}
 
 
 def _related_pods(pods: list[dict[str, Any]], requested_terms: set[str]) -> list[str]:
@@ -804,6 +804,39 @@ def answer_operations_question(snapshot: dict[str, Any], question: str, current_
     normalized = clean_question.casefold()
     summary = snapshot.get("summary", {})
     question_terms = _question_terms(clean_question)
+    history = snapshot.get("query_history", {})
+    historical_intent = bool(question_terms & {"hour", "hours", "day", "days", "today", "yesterday", "recent"})
+    issue_intent = bool(question_terms & {"error", "errors", "issue", "issues", "problem", "problems", "failed", "failure", "unhealthy", "restart", "restarts"})
+    if historical_intent and issue_intent:
+        relevant = [event for event in history.get("events", []) if event.get("kind") in {"log", "alert", "restart", "runtime", "health", "deployment"} and event.get("severity") != "healthy"]
+        requested_names = _pod_name_terms(question_terms)
+        available_names = {str(event.get("pod") or event.get("workload") or "platform") for event in relevant}
+        matched_names = {name for name in available_names if any(term in name.casefold() for term in requested_names)}
+        if requested_names and matched_names:
+            relevant = [event for event in relevant if str(event.get("pod") or event.get("workload") or "platform") in matched_names]
+        by_pod: dict[str, list[dict[str, Any]]] = {}
+        for event in relevant:
+            by_pod.setdefault(str(event.get("pod") or event.get("workload") or "platform"), []).append(event)
+        hours = max(1, int(history.get("range_minutes", 1440)) // 60)
+        if by_pod:
+            ranked = sorted(by_pod.items(), key=lambda item: len(item[1]), reverse=True)
+            lines, evidence = [], []
+            for pod, pod_events in ranked[:5]:
+                kinds = Counter(event.get("kind", "signal") for event in pod_events)
+                description = ", ".join(f"{count} {kind}" for kind, count in kinds.most_common())
+                latest = pod_events[0]
+                lines.append(f"• {pod}: {description}; latest: {latest.get('title', 'operational signal')}.")
+                evidence.append({"kind": "history", "pod": pod, "text": _assistant_excerpt(f"{latest.get('title', '')}: {latest.get('detail', '')}")})
+            matched_note = f" matching {', '.join(sorted(requested_names))}" if requested_names and matched_names else ""
+            answer = f"L1ControlScope found {len(relevant)} operational issue signal(s){matched_note} across {len(by_pod)} application/workload(s) in the last {hours} hours.\n" + "\n".join(lines)
+        else:
+            scope = f" matching {', '.join(sorted(requested_names))}" if requested_names else ""
+            answer = f"L1ControlScope found no persisted error, restart, alert, unhealthy-runtime, or deployment-failure signal{scope} in the last {hours} hours."
+            evidence = []
+        coverage = history.get("coverage", {})
+        if not coverage.get("complete", False):
+            answer += f"\nCoverage note: L1ControlScope currently has {coverage.get('observed_minutes', 0)} of the requested {coverage.get('requested_minutes', 0)} minutes stored; results cover only that observed period."
+        return {"answer": answer, "mode": "app-first-evidence-query", "generated_at": snapshot.get("generated_at"), "sources": ["L1ControlScope operational history", "Persisted masked log signals", "Deployment and restart events"], "evidence": evidence[:MAX_ASSISTANT_EVIDENCE], "actions": _assistant_actions(evidence, None, normalized), "coverage": coverage}
     # Questions about shared platform services must search cluster-wide rather
     # than inheriting the currently selected application pod.
     investigation_pod = current_pod
@@ -850,7 +883,7 @@ def answer_operations_question(snapshot: dict[str, Any], question: str, current_
 
     pods = snapshot.get("pods", [])
     log_text = _requested_log_text(clean_question)
-    pod_name_terms = _pod_name_terms(question_terms) if ({"pod", "pods"} & question_terms or log_text) else set()
+    pod_name_terms = _pod_name_terms(question_terms) if ({"pod", "pods", "application", "applications", "app", "apps"} & question_terms or log_text) else set()
     named_pods = [pod for pod in pods if any(term in pod["name"].casefold() for term in pod_name_terms)]
     if pod_name_terms and not named_pods and {"pod", "pods"} & question_terms:
         requested_name = ", ".join(sorted(pod_name_terms))
@@ -877,6 +910,22 @@ def answer_operations_question(snapshot: dict[str, Any], question: str, current_
             answer = f"No log entry containing “{log_text}” was found in {scope}."
             evidence = []
         return {"answer": answer, "mode": "python-operations-intelligence", "generated_at": snapshot.get("generated_at"), "sources": ["Masked pod logs"], "evidence": evidence, "actions": _assistant_actions(evidence, named_pods[0]["name"] if named_pods else None, normalized)}
+
+    if {"image", "tag", "version", "digest"} & question_terms:
+        target_pods = named_pods or ([pod for pod in pods if pod.get("name") == current_pod] if current_pod else [])
+        if target_pods:
+            details = []
+            evidence = []
+            for pod in target_pods[:10]:
+                image = str(pod.get("image") or "Not available")
+                details.append(f"• {pod['name']}: {image}")
+                evidence.append({"kind": "workload", "pod": pod["name"], "text": f"Runtime image: {image}"})
+            answer = f"Runtime image information for {len(target_pods)} matching pod(s):\n" + "\n".join(details)
+        else:
+            requested = ", ".join(sorted(pod_name_terms)) or "the requested pod"
+            answer = f"I could not find a live pod matching {requested}, so no runtime image tag or digest can be reported."
+            evidence = []
+        return {"answer": answer, "mode": "app-first-evidence-query", "generated_at": snapshot.get("generated_at"), "sources": ["Live container runtime metadata"], "evidence": evidence[:MAX_ASSISTANT_EVIDENCE], "actions": _assistant_actions(evidence, target_pods[0]["name"] if target_pods else None, normalized)}
 
     if named_pods:
         running = [pod for pod in named_pods if pod.get("status") == "Running"]
@@ -925,7 +974,40 @@ def answer_operations_question(snapshot: dict[str, Any], question: str, current_
     if question_terms & navigation_terms:
         answer = "This assistant searches operational data, not saved dashboard views. Use the left navigation to open a workspace, then ask about a specific pod, log error, CPU, memory, restart, alert, or forecast."
         return {"answer": answer, "mode": "local-retrieval-assistant", "generated_at": snapshot.get("generated_at"), "sources": ["PulseOps workspace navigation"], "evidence": []}
-    evidence = _retrieve_operations_evidence(snapshot, clean_question, investigation_pod)
+    # A named application is a hard boundary, not a relevance boost. This keeps
+    # broad concepts such as "database" from pulling unrelated pods at scale.
+    pod_names = [str(pod.get("name", "")) for pod in snapshot.get("pods", [])]
+    entity_terms = {term for term in question_terms if len(term) >= 3 and any(term in name.casefold() for name in pod_names)}
+    scoped_names = {name for name in pod_names if any(term in name.casefold() for term in entity_terms)}
+    operational_terms = {
+        "database", "db", "postgres", "postgresql", "sql", "backend", "frontend", "service", "network", "storage",
+        "memory", "cpu", "capacity", "forecast", "timeout", "latency", "availability", "deployment", "deployments",
+        "workload", "workloads", "restart", "restarts", "error", "errors", "warning", "warnings", "critical",
+        "issue", "issues", "problem", "problems", "health", "healthy", "unhealthy", "status", "current", "live",
+    }
+    for key, values in OPERATIONS_VOCABULARY.items():
+        operational_terms.add(key)
+        operational_terms.update(values)
+    explicit_entity_candidates = {term for term in _pod_name_terms(question_terms) if term not in operational_terms}
+    if explicit_entity_candidates and not scoped_names:
+        requested = ", ".join(sorted(explicit_entity_candidates))
+        related = _related_pods(snapshot.get("pods", []), explicit_entity_candidates)
+        suggestion = f" Closest monitored pod name(s): {', '.join(related)}." if related else ""
+        answer = f"I could not find a monitored application or pod matching “{requested}”. I did not broaden the search to unrelated pods.{suggestion}"
+        return {"answer": answer, "mode": "app-first-evidence-query", "generated_at": snapshot.get("generated_at"), "sources": ["Live pod inventory"], "scope": {"requested_application": requested, "matched_pods": [], "strict": True}, "evidence": [], "actions": []}
+    evidence_snapshot = snapshot
+    if scoped_names:
+        evidence_snapshot = {
+            **snapshot,
+            "pods": [pod for pod in snapshot.get("pods", []) if pod.get("name") in scoped_names],
+            "analysis": {name: value for name, value in snapshot.get("analysis", {}).items() if name in scoped_names},
+            "logs": {name: value for name, value in snapshot.get("logs", {}).items() if name in scoped_names},
+            "structured_logs": {name: value for name, value in snapshot.get("structured_logs", {}).items() if name in scoped_names},
+            "forecasts": [item for item in snapshot.get("forecasts", []) if item.get("pod") in scoped_names],
+            "alerts": [item for item in snapshot.get("alerts", []) if item.get("pod") in scoped_names],
+        }
+        investigation_pod = next(iter(scoped_names)) if len(scoped_names) == 1 else None
+    evidence = _retrieve_operations_evidence(evidence_snapshot, clean_question, investigation_pod)
     evidence_text = [f"• {item['pod']} — {item['text']}" for item in evidence]
     relevant_pods = {item["pod"] for item in evidence}
     if any(word in normalized for word in ("error", "log", "exception", "warning", "crash")):
@@ -938,17 +1020,17 @@ def answer_operations_question(snapshot: dict[str, Any], question: str, current_
         next_step = "Start with the highest-severity cited item, then inspect that pod and its correlated logs."
     else:
         next_step = "Ask a more focused follow-up using a pod name, an error message, or a metric such as memory, CPU, restarts, or forecast."
-    assessment = _operations_assessment(snapshot, evidence, investigation_pod)
+    assessment = _operations_assessment(evidence_snapshot, evidence, investigation_pod)
     if assessment.startswith("No correlated failure"):
         next_step = "No immediate corrective action is indicated. Monitor the cited workload and investigate only if a current error, restart, or alert appears."
-    context_note = f" (focused on {investigation_pod})" if investigation_pod else ""
+    context_note = f" (strict scope: {', '.join(sorted(scoped_names))})" if scoped_names else (f" (focused on {investigation_pod})" if investigation_pod else "")
     answer = "\n".join([
         f"Short answer{context_note} for: “{clean_question}”",
         *(evidence_text or ["• No matching live records were found."]),
         f"Assessment: {assessment}",
         f"Next step: {next_step}",
     ])
-    return {"answer": answer, "mode": "python-operations-intelligence", "generated_at": snapshot.get("generated_at"), "sources": ["Live workload telemetry", "Masked pod logs", "Alert rules and capacity forecast"], "evidence": evidence, "actions": _assistant_actions(evidence, investigation_pod, normalized)}
+    return {"answer": answer, "mode": "python-operations-intelligence", "generated_at": snapshot.get("generated_at"), "sources": ["Live workload telemetry", "Masked pod logs", "Alert rules and capacity forecast"], "scope": {"matched_pods": sorted(scoped_names), "strict": bool(scoped_names)}, "evidence": evidence, "actions": _assistant_actions(evidence, investigation_pod, normalized)}
 
 
 class AlertEngine:
@@ -1229,17 +1311,20 @@ class OperationalHistory:
         self.events: list[dict[str, Any]] = []
         self.previous_pods: dict[str, dict[str, Any]] = {}
         self.previous_workloads: dict[str, dict[str, Any]] = {}
+        self.seen_log_signatures: dict[str, float] = {}
         self._last_persist = 0.0
         try:
             saved = json.loads(self.file.read_text())
             self.samples = [item for item in saved.get("samples", []) if isinstance(item, dict)]
             self.events = [item for item in saved.get("events", []) if isinstance(item, dict)]
+            self.previous_workloads = {str(name): state for name, state in saved.get("workload_states", {}).items() if isinstance(state, dict)}
+            self.seen_log_signatures = {str(key): float(value) for key, value in saved.get("seen_log_signatures", {}).items()}
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
 
     def _persist(self) -> None:
         try:
-            self.file.write_text(json.dumps({"samples": self.samples, "events": self.events}))
+            self.file.write_text(json.dumps({"samples": self.samples, "events": self.events, "workload_states": self.previous_workloads, "seen_log_signatures": self.seen_log_signatures}))
             self._last_persist = time.time()
         except OSError:
             pass
@@ -1263,6 +1348,18 @@ class OperationalHistory:
                 "errors": sum(item.get("counts", {}).get("errors", 0) for item in analysis.values()),
             },
             "pods": [{"name": pod["name"], "cpu": pod.get("cpu_percent", 0), "memory": pod.get("memory_percent", 0), "restarts": pod.get("restarts", 0), "risk": pod.get("risk", "healthy")} for pod in pods],
+            "workloads": [
+                {
+                    "name": workload.get("name"), "image": workload.get("image", ""), "status": workload.get("status", "Unknown"),
+                    "available": workload.get("available", 0), "desired": workload.get("desired", 0),
+                    "cpu": workload.get("summary", {}).get("cpu_percent", 0), "memory": (
+                        round(100 * workload.get("summary", {}).get("memory_mib", 0) / max(workload.get("summary", {}).get("memory_limit_mib", 0), 1), 1)
+                    ), "restarts": workload.get("summary", {}).get("restarts", 0),
+                    "errors": sum(resource.get("analysis", {}).get("counts", {}).get("errors", 0) for resource in workload.get("resources", [])),
+                }
+                for workload in snapshot.get("deployments", [])
+                if workload.get("status") != "Completed"
+            ],
         }
         self.samples.append(sample)
         current_pods: dict[str, dict[str, Any]] = {}
@@ -1285,12 +1382,30 @@ class OperationalHistory:
             previous = self.previous_workloads.get(name)
             if previous:
                 if previous.get("image") != state["image"]:
-                    self.events.append(self._event(now, "deployment", "warning", "Deployment image changed", name, f"{previous.get('image') or 'Unknown image'} → {state['image'] or 'Unknown image'}"))
+                    event = self._event(now, "deployment", "warning", "Deployment image changed", name, f"{previous.get('image') or 'Unknown image'} → {state['image'] or 'Unknown image'}")
+                    event.update({"workload": name, "previous_image": previous.get("image", ""), "current_image": state["image"], "change_type": "image"})
+                    self.events.append(event)
                 if previous.get("status") != state["status"] or previous.get("available") != state["available"] or previous.get("desired") != state["desired"]:
                     severity = "warning" if state["status"] not in {"Ready", "Completed"} or state["available"] != state["desired"] else "healthy"
                     self.events.append(self._event(now, "deployment", severity, f"Deployment readiness changed: {state['status']}", name, f"Ready replicas: {previous.get('available', 0)}/{previous.get('desired', 0)} → {state['available']}/{state['desired']}"))
+            else:
+                event = self._event(now, "deployment", "healthy", "Release first observed", name, state["image"] or "Unknown image")
+                event.update({"workload": name, "previous_image": "", "current_image": state["image"], "change_type": "observed"})
+                self.events.append(event)
             current_workloads[name] = state
         self.previous_workloads = current_workloads
+        for pod_name, records in snapshot.get("structured_logs", {}).items():
+            for record in records:
+                if record.get("level") not in {"critical", "error", "warn", "warning"}:
+                    continue
+                signature = f'{pod_name}|{record.get("timestamp")}|{record.get("raw")}'
+                if signature in self.seen_log_signatures:
+                    continue
+                self.seen_log_signatures[signature] = now
+                severity = "critical" if record.get("level") == "critical" else "warning"
+                event = self._event(now, "log", severity, f'{record.get("level", "warning").title()} log detected', pod_name, str(record.get("message", ""))[:500])
+                event["log_level"] = record.get("level")
+                self.events.append(event)
         for alert in snapshot.get("alerts", []):
             signature = f"{alert.get('source', 'system')}:{alert.get('pod')}:{alert.get('message')}"
             recent = any(item.get("signature") == signature and now - float(item.get("timestamp", 0)) < 300 for item in self.events[-100:])
@@ -1301,6 +1416,7 @@ class OperationalHistory:
         cutoff = now - 86400
         self.samples = [item for item in self.samples if float(item.get("timestamp", 0)) >= cutoff]
         self.events = [item for item in self.events if float(item.get("timestamp", 0)) >= cutoff][-500:]
+        self.seen_log_signatures = dict(sorted(((key, value) for key, value in self.seen_log_signatures.items() if value >= cutoff), key=lambda item: item[1])[-3000:])
         if now - self._last_persist >= 60:
             self._persist()
 

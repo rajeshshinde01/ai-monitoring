@@ -1,0 +1,31 @@
+/* Final usability and consistency pass. */
+.workspace-nav a[hidden], [hidden] { display: none !important; }
+.panel-action { min-height: 30px; padding: 5px 9px; font-family: inherit; font-size: .7rem; font-weight: 850; line-height: 1.15; }
+.panel-action:disabled { cursor: default; opacity: .58; transform: none; }
+.panel-title { align-items: flex-start; gap: 14px; }
+.panel-title > :last-child { flex: 0 0 auto; }
+.selected-data-scope { margin: 0 0 10px; padding: 7px 9px; border-left: 3px solid #5877d7; border-radius: 4px; color: #536982; background: #f2f6fc; font-size: .68rem; }
+.selected-data-scope b { color: #293f59; }
+.inventory-controls { gap: 10px; padding: 11px; }
+.inventory-controls input, .inventory-controls select, .inventory-controls button { box-sizing: border-box; min-height: 36px; font-size: .7rem; }
+.inventory-filters, .inventory-pagination { gap: 9px; line-height: 1.35; }
+.url-monitor-tools input, .url-monitor-tools select, .log-control-bar input, .log-control-bar select, .log-control-bar button, .log-action-bar select, .log-action-bar button { box-sizing: border-box; min-height: 36px; }
+.workspace-error-groups article { display: flow-root; }
+.workspace-error-groups article > small { display: block; margin-bottom: 7px; }
+.workspace-error-groups article > button { float: left; clear: both; }
+.pulseops-workspace[data-theme="dark"] .selected-data-scope { border-color: #8299ea; color: #b3c3d9; background: #11243a; }
+.pulseops-workspace[data-theme="dark"] .selected-data-scope b { color: #e1ebf8; }
+.live-indicator.disconnected { color: #a26306; }
+.live-indicator.disconnected::before { background: #d89421; box-shadow: 0 0 0 5px rgba(216,148,33,.14); }
+.pulseops-workspace[data-theme="dark"] .url-monitor-banner strong { color: #dff5e9; }
+.pulseops-workspace[data-theme="dark"] .url-monitor-banner p, .pulseops-workspace[data-theme="dark"] .url-monitor-banner > span { color: #a9cbbb; }
+.pulseops-workspace[data-theme="dark"] .url-monitor-banner:has(.url-banner-icon.attention) strong { color: #ffe7b5; }
+@media (max-width: 900px) {
+  .workspace-nav { flex-wrap: nowrap !important; overflow-x: auto !important; overflow-y: hidden; gap: 5px; padding: 2px 0 6px; scrollbar-width: thin; }
+  .workspace-nav a { box-sizing: border-box; min-height: 38px; flex: 0 0 auto; }
+}
+@media (max-width: 620px) {
+  .panel-title { align-items: flex-start; }
+  .panel-title .muted { max-width: 42%; text-align: right; }
+  .inventory-filters, .inventory-pagination { align-items: stretch; }
+}

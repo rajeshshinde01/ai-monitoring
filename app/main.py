@@ -6,6 +6,11 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
+import ipaddress
+import socket
+from uuid import uuid4
+import time
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -14,7 +19,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth
 
-from app.observability import AlertEngine, ClusterClient, ClusterConnectionError, TelemetryCollector, answer_operations_question
+from app.observability import AlertEngine, ClusterClient, ClusterConnectionError, TelemetryCollector, answer_operations_question, structure_logs
 from app.auth import AccountLockedError, LocalAuth
 
 
@@ -179,6 +184,19 @@ class PrometheusSettingsUpdate(BaseModel):
     base_url: str = Field(default="", max_length=240)
 
 
+class UrlMonitorCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    environment: str = Field(pattern="^(dev|qa|uat|prod)$")
+    url: str = Field(min_length=8, max_length=500)
+    health_path: str = Field(default="", max_length=200)
+    expected_status: int = Field(default=200, ge=100, le=599)
+    enabled: bool = True
+
+
+class UrlMonitorUpdate(UrlMonitorCreate):
+    pass
+
+
 class IncidentWorkspaceCreate(BaseModel):
     title: str = Field(min_length=3, max_length=120)
     note: str = Field(default="", max_length=1000)
@@ -259,6 +277,193 @@ def _splunk_settings_file() -> Path:
 
 def _prometheus_settings_file() -> Path:
     return DATA_DIR / "prometheus-settings.json"
+
+
+def _url_monitors_file() -> Path:
+    return DATA_DIR / "url-monitors.json"
+
+
+def _read_url_monitors() -> list[dict[str, Any]]:
+    try:
+        value = json.loads(_url_monitors_file().read_text())
+        return value if isinstance(value, list) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
+def _write_url_monitors(monitors: list[dict[str, Any]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _url_monitors_file().write_text(json.dumps(monitors, indent=2) + "\n")
+
+
+def _validated_monitor(update: UrlMonitorCreate) -> dict[str, Any]:
+    values = update.model_dump()
+    parsed = urlparse(values["url"].strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise HTTPException(status_code=422, detail="Enter a complete HTTP or HTTPS URL without credentials or a fragment.")
+    allowed = {host.strip().lower() for host in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if host.strip()}
+    if allowed and parsed.hostname.lower() not in allowed:
+        raise HTTPException(status_code=422, detail="This hostname is not in URL_MONITOR_ALLOWED_HOSTS.")
+    if not allowed:
+        try:
+            addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+            if any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback or ipaddress.ip_address(address).is_link_local for address in addresses):
+                raise HTTPException(status_code=422, detail="Private hosts must be explicitly listed in URL_MONITOR_ALLOWED_HOSTS.")
+        except socket.gaierror:
+            pass
+    values["name"] = values["name"].strip()
+    values["url"] = values["url"].strip().rstrip("/")
+    values["health_path"] = values["health_path"].strip()
+    if values["health_path"] and not values["health_path"].startswith("/"):
+        values["health_path"] = "/" + values["health_path"]
+    return values
+
+
+def _monitor_target(monitor: dict[str, Any]) -> str:
+    """Revalidate every request to prevent DNS changes from reaching internal addresses."""
+    base = str(monitor["url"]).rstrip("/")
+    target = base + str(monitor.get("health_path", ""))
+    parsed = urlparse(target)
+    allowed = {host.strip().lower() for host in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if host.strip()}
+    if not parsed.hostname or parsed.scheme not in {"http", "https"}:
+        raise ValueError("Invalid monitor URL")
+    if allowed and parsed.hostname.lower() not in allowed:
+        raise ValueError("Host is not allowlisted")
+    if not allowed:
+        addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
+        if any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback or ipaddress.ip_address(address).is_link_local for address in addresses):
+            raise ValueError("Private host is not allowlisted")
+    return target
+
+
+async def _check_url_monitors() -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(follow_redirects=False, timeout=5.0) as http:
+        for monitor in _read_url_monitors():
+            result = {**monitor, "status": "disabled" if not monitor.get("enabled", True) else "down", "latency_ms": None, "checked_at": datetime.now(timezone.utc).isoformat(), "status_code": None, "error": None}
+            if monitor.get("enabled", True):
+                started = time.perf_counter()
+                try:
+                    response = await http.get(_monitor_target(monitor))
+                    result["latency_ms"] = round((time.perf_counter() - started) * 1000)
+                    result["status_code"] = response.status_code
+                    result["status"] = "operational" if response.status_code == monitor.get("expected_status", 200) else "degraded"
+                except (httpx.RequestError, ValueError, socket.gaierror) as error:
+                    result["latency_ms"] = round((time.perf_counter() - started) * 1000)
+                    result["error"] = error.__class__.__name__
+            results.append(result)
+    return results
+
+
+def _correlate_operations(snapshot: dict[str, Any], monitors: list[dict[str, Any]], deployment_changes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Rank explainable incident hypotheses from URL, workload, pod, and log signals."""
+    import re
+    deployments = snapshot.get("deployments", [])
+    deployment_changes = deployment_changes or []
+    incidents: list[dict[str, Any]] = []
+
+    def tokens(value: str) -> set[str]:
+        ignored = {"http", "https", "health", "service", "local"}
+        return {part for part in re.split(r"[^a-z0-9]+", value.casefold()) if len(part) > 2 and part not in ignored}
+
+    for monitor in monitors:
+        if monitor.get("status") not in {"down", "degraded"}:
+            continue
+        terms = tokens(f'{monitor.get("name", "")} {urlparse(str(monitor.get("url", ""))).hostname or ""}')
+        matches = [item for item in deployments if tokens(str(item.get("name", ""))) & terms]
+        evidence = [f'{monitor.get("environment", "unknown").upper()} URL is {monitor.get("status")}: HTTP {monitor.get("status_code") or "no response"} in {monitor.get("latency_ms") or 0} ms.']
+        score = 70 if monitor.get("status") == "down" else 50
+        cause = "The endpoint is not returning its expected response. No matching workload was identified yet."
+        pod_name = deployment_name = None
+        if matches:
+            deployment = matches[0]
+            deployment_name = deployment.get("name")
+            recent_change = next((change for change in deployment_changes if change.get("workload", change.get("pod")) == deployment_name and change.get("change_type") == "image"), None)
+            if recent_change:
+                score += 15
+                age_minutes = max(0, round((time.time() - float(recent_change.get("timestamp", 0))) / 60))
+                evidence.append(f'Release changed {age_minutes} minute(s) ago: {recent_change.get("previous_image") or "unknown"} → {recent_change.get("current_image") or "unknown"}.')
+                cause = "The availability failure follows a recent release image change."
+            if deployment.get("status") not in {"Ready", "Running", "Healthy"} or deployment.get("available", 0) < deployment.get("desired", 0):
+                score += 18
+                evidence.append(f'{deployment_name} readiness is {deployment.get("available", 0)}/{deployment.get("desired", 0)} ({deployment.get("status", "Unknown")}).')
+                cause = "The URL failure aligns with reduced deployment readiness."
+            resources = sorted(deployment.get("resources", []), key=lambda item: (item.get("pod", {}).get("risk") == "critical", item.get("pod", {}).get("restarts", 0)), reverse=True)
+            if resources:
+                pod = resources[0].get("pod", {})
+                analysis = resources[0].get("analysis", {})
+                pod_name = pod.get("name")
+                if pod.get("status") not in {"Running", "Succeeded"} or pod.get("restarts", 0):
+                    score += 12
+                    evidence.append(f'{pod_name} is {pod.get("status", "Unknown")} with {pod.get("restarts", 0)} restart(s).')
+                    cause = "The URL failure aligns with an unhealthy or restarting application pod."
+                counts = analysis.get("counts", {})
+                if counts.get("errors", 0) or counts.get("oom_events", 0):
+                    score += 10
+                    evidence.append(f'Logs for {pod_name} contain {counts.get("errors", 0)} error(s) and {counts.get("oom_events", 0)} OOM event(s).')
+                    cause = "Application log failures coincide with the availability failure."
+        incidents.append({"id": f'url:{monitor.get("id", monitor.get("name", "endpoint"))}', "severity": "critical" if score >= 70 else "warning", "score": min(score, 100), "confidence": min(95, 45 + len(evidence) * 15), "title": f'{monitor.get("name", "Application")} is {monitor.get("status")}', "summary": f'{monitor.get("environment", "unknown").upper()} availability is affected.', "probable_cause": cause, "evidence": evidence[:4], "recommendation": "Open the related pod and review recent logs; if the problem started after a release, compare or roll back the deployed image." if pod_name else "Confirm routing, DNS, certificate, and upstream availability, then map the URL name to its workload for deeper correlation.", "pod": pod_name, "deployment": deployment_name, "environment": monitor.get("environment")})
+
+    matched_pods = {item.get("pod") for item in incidents}
+    completed_tasks = set(snapshot.get("completed_tasks", []))
+    for pod in snapshot.get("pods", []):
+        analysis = snapshot.get("analysis", {}).get(pod.get("name"), {})
+        counts = analysis.get("counts", {})
+        if any(f'-{task}-' in str(pod.get("name", "")) for task in completed_tasks):
+            continue
+        if pod.get("name") in matched_pods or (pod.get("risk") == "healthy" and not counts.get("errors") and not counts.get("oom_events")):
+            continue
+        score = (65 if pod.get("risk") == "critical" else 45) + min(20, int(pod.get("restarts", 0)) * 4) + (15 if counts.get("oom_events") else 0)
+        evidence = [f'{pod.get("name")} is {pod.get("status", "Unknown")} with risk {pod.get("risk", "unknown")}.']
+        if pod.get("restarts", 0): evidence.append(f'{pod.get("restarts")} restart(s) detected.')
+        if counts.get("errors") or counts.get("oom_events"): evidence.append(f'Logs contain {counts.get("errors", 0)} error(s) and {counts.get("oom_events", 0)} OOM event(s).')
+        incidents.append({"id": f'pod:{pod.get("name")}', "severity": "critical" if score >= 70 else "warning", "score": min(score, 100), "confidence": min(90, 45 + len(evidence) * 15), "title": f'{pod.get("name")} needs attention', "summary": "A workload signal was detected before or without an external URL failure.", "probable_cause": analysis.get("findings", ["Container health or log signals require investigation."])[0], "evidence": evidence, "recommendation": "Open the pod investigation, review recent logs and memory pressure, then compare the current image with the last known healthy deployment.", "pod": pod.get("name"), "deployment": None, "environment": None})
+
+    matched_deployments = {item.get("deployment") for item in incidents}
+    for deployment in deployments:
+        name = deployment.get("name")
+        healthy = deployment.get("status") in {"Ready", "Running", "Healthy", "Completed"} and deployment.get("available", 0) >= deployment.get("desired", 0)
+        if name in matched_deployments or healthy:
+            continue
+        desired, available = deployment.get("desired", 0), deployment.get("available", 0)
+        evidence = [f'{name} readiness is {available}/{desired} ({deployment.get("status", "Unknown")}).', f'Current deployed image: {deployment.get("image", "Not available")}.']
+        restarts = deployment.get("summary", {}).get("restarts", 0)
+        if restarts:
+            evidence.append(f'{restarts} restart(s) detected across owned pods.')
+        score = min(95, 55 + (20 if desired and available == 0 else 8) + min(12, restarts * 3))
+        incidents.append({"id": f'deployment:{name}', "severity": "critical" if score >= 70 else "warning", "score": score, "confidence": min(90, 50 + len(evidence) * 12), "title": f'{name} deployment is not fully ready', "summary": "Deployment health is degraded even if an external URL has not failed yet.", "probable_cause": "One or more desired replicas are unavailable or unhealthy.", "evidence": evidence, "recommendation": "Inspect the unavailable pod, review its events and logs, and compare the deployed image with the last healthy release.", "pod": None, "deployment": name, "environment": None})
+
+    incidents.sort(key=lambda item: item["score"], reverse=True)
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "engine": {"name": "L1 deterministic investigation engine", "ai_required": False, "method": "Rule and evidence correlation"}, "summary": {"total": len(incidents), "critical": sum(item["severity"] == "critical" for item in incidents), "warning": sum(item["severity"] == "warning" for item in incidents), "signals_correlated": len(monitors) + len(snapshot.get("pods", [])) + len(snapshot.get("analysis", {})) + len(deployments)}, "release_timeline": deployment_changes[:12], "incidents": incidents[:12]}
+
+
+def _deployment_comparisons(snapshot: dict[str, Any], history: dict[str, Any]) -> list[dict[str, Any]]:
+    now = time.time()
+    comparisons = []
+    changes = [event for event in history.get("deployment_changes", []) if event.get("change_type") in {"image", "observed"}]
+    current_by_name = {item.get("name"): item for item in snapshot.get("deployments", [])}
+
+    def workload_points(samples: list[dict[str, Any]], name: str, start: float, end: float) -> list[dict[str, Any]]:
+        return [workload for sample in samples if start <= float(sample.get("timestamp", 0)) <= end for workload in sample.get("workloads", []) if workload.get("name") == name]
+
+    def aggregate(points: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not points:
+            return None
+        return {"samples": len(points), "cpu_percent": round(sum(float(item.get("cpu", 0)) for item in points) / len(points), 1), "memory_percent": round(sum(float(item.get("memory", 0)) for item in points) / len(points), 1), "errors": max(int(item.get("errors", 0)) for item in points), "restarts": max(int(item.get("restarts", 0)) for item in points), "ready_percent": round(100 * sum(float(item.get("available", 0)) / max(float(item.get("desired", 0)), 1) for item in points) / len(points), 1)}
+
+    for change in changes[:10]:
+        changed_at = float(change.get("timestamp", 0))
+        name = str(change.get("workload") or change.get("pod") or "workload")
+        before = aggregate(workload_points(history.get("samples", []), name, changed_at - 900, changed_at - 0.001))
+        after = aggregate(workload_points(history.get("samples", []), name, changed_at, min(now, changed_at + 900)))
+        current = current_by_name.get(name, {})
+        if after is None and current:
+            summary = current.get("summary", {})
+            after = {"samples": 1, "cpu_percent": summary.get("cpu_percent", 0), "memory_percent": round(100 * summary.get("memory_mib", 0) / max(summary.get("memory_limit_mib", 0), 1), 1), "errors": sum(resource.get("analysis", {}).get("counts", {}).get("errors", 0) for resource in current.get("resources", [])), "restarts": summary.get("restarts", 0), "ready_percent": round(100 * current.get("available", 0) / max(current.get("desired", 0), 1), 1)}
+        deltas = {key: round(float(after.get(key, 0)) - float(before.get(key, 0)), 1) for key in ("cpu_percent", "memory_percent", "errors", "restarts", "ready_percent")} if before and after else None
+        regressed = bool(deltas and (deltas["errors"] > 0 or deltas["restarts"] > 0 or deltas["ready_percent"] < 0 or deltas["memory_percent"] >= 15))
+        comparisons.append({"id": change.get("id"), "workload": name, "changed_at": changed_at, "previous_image": change.get("previous_image", ""), "current_image": change.get("current_image", current.get("image", "")), "change_type": change.get("change_type"), "before": before, "after": after, "deltas": deltas, "status": "regressed" if regressed else "stable" if before and after else "collecting", "window_minutes": 15})
+    return comparisons
 
 
 def _default_prometheus_settings() -> dict:
@@ -405,6 +610,90 @@ def _ground_answer_with_ollama(runtime: dict[str, Any], result: dict[str, Any], 
         return content, None
     except requests.RequestException as error:
         return None, f"Local Ollama is unavailable; PulseOps used its Python intelligence instead. ({error.__class__.__name__})"
+
+
+def _ask_operations_plan(question: str, snapshot: dict[str, Any], requested_minutes: int) -> dict[str, Any]:
+    import re
+    normalized = question.casefold()
+    explicit_sources = [source for source, words in {"pod logs": ("pod log", "logs", "log "), "deployments": ("deployment", "release", "image", "rollout"), "splunk": ("splunk",), "history": ("history", "incident", "alert", "restart")}.items() if any(word in normalized for word in words)]
+    sources = explicit_sources or ["pod logs", "deployments", "history"]
+    if any(phrase in normalized for phrase in ("all sources", "every source", "everywhere")) and "splunk" not in sources:
+        sources.append("splunk")
+    levels = [level for level in ("critical", "error", "warning") if level in normalized]
+    if not levels and any(word in normalized for word in ("issue", "issues", "problem", "problems", "failed", "failure")):
+        levels = ["critical", "error", "warning"]
+    ignored = {"find", "search", "show", "check", "look", "for", "from", "within", "during", "about", "any", "all", "every", "everywhere", "source", "sources", "the", "a", "an", "in", "on", "last", "hour", "hours", "day", "days", "today", "yesterday", "pod", "pods", "application", "applications", "app", "logs", "log", "deployment", "deployments", "splunk", "history", "error", "errors", "warning", "warnings", "critical", "issue", "issues", "problem", "problems"}
+    quoted = re.findall(r'["“]([^"”]{2,120})["”]', question)
+    terms = quoted or [term for term in re.findall(r"[a-zA-Z0-9_.:/=-]{2,80}", normalized) if term not in ignored and not term.isdigit()]
+    pod_names = [str(pod.get("name", "")) for pod in snapshot.get("pods", [])]
+    matched_pods = sorted({name for name in pod_names if any(term in name.casefold() for term in terms)})
+    return {"sources": sources, "time_range_minutes": requested_minutes, "levels": levels, "terms": terms[:8], "matched_pods": matched_pods}
+
+
+def _search_splunk_for_plan(plan: dict[str, Any]) -> tuple[list[dict[str, str]], str | None]:
+    import requests
+    settings = _read_splunk_settings()
+    if not settings.get("enabled") or not os.getenv("SPLUNK_API_TOKEN", "").strip():
+        return [], "Splunk is not configured or its read-only API token is unavailable."
+    try:
+        field = settings["pod_field"]
+        scope = f'{settings["scope_field"]}="{str(settings["scope_value"]).replace(chr(34), "")}" ' if settings.get("scope_value") else ""
+        pod_clause = " OR ".join(f'{field}="*{name.replace(chr(34), "")}*"' for name in plan.get("matched_pods", [])[:10])
+        term_clause = " ".join(f'"{str(term).replace(chr(34), "")}"' for term in plan.get("terms", [])[:5])
+        filters = f'({pod_clause}) ' if pod_clause else ""
+        search = f'search index="{settings["index"]}" earliest=-{plan["time_range_minutes"]}m {scope}{filters}{term_clause} | head 100'
+        response = requests.post(f'{settings["base_url"]}/services/search/jobs', headers={"Authorization": f'Bearer {os.environ["SPLUNK_API_TOKEN"]}'}, data={"search": search, "output_mode": "json", "exec_mode": "oneshot", "count": 100}, timeout=15, verify=os.getenv("SPLUNK_VERIFY_TLS", "true").lower() == "true")
+        response.raise_for_status()
+        records = []
+        for item in response.json().get("results", [])[:100]:
+            raw = str(item.get("_raw", item.get("message", "")))
+            masked = structure_logs([raw])[0]
+            records.append({"pod": str(item.get(field, "splunk")), "text": masked["message"], "level": masked["level"], "timestamp": str(item.get("_time", ""))})
+        return records, None
+    except (requests.RequestException, ValueError, KeyError, TypeError) as error:
+        return [], f"Splunk search could not complete ({error.__class__.__name__})."
+
+
+def _execute_ask_operations(plan: dict[str, Any], snapshot: dict[str, Any], history: dict[str, Any]) -> dict[str, Any]:
+    terms = [str(term).casefold() for term in plan.get("terms", [])]
+    matched = set(plan.get("matched_pods", []))
+    results: list[dict[str, str]] = []
+    source_status: dict[str, str] = {}
+    if "pod logs" in plan["sources"]:
+        for pod, records in snapshot.get("structured_logs", {}).items():
+            if matched and pod not in matched: continue
+            for record in records:
+                haystack = f'{record.get("message", "")} {record.get("raw", "")}'.casefold()
+                if terms and not any(term in haystack or term in pod.casefold() for term in terms): continue
+                if plan["levels"] and record.get("level", "").replace("warn", "warning") not in plan["levels"]: continue
+                results.append({"source": "Pod logs", "pod": pod, "text": str(record.get("message", "")), "timestamp": str(record.get("timestamp") or "")})
+        source_status["Pod logs"] = f"{len([item for item in results if item['source'] == 'Pod logs'])} matches"
+    if "deployments" in plan["sources"]:
+        for deployment in snapshot.get("deployments", []):
+            haystack = f'{deployment.get("name", "")} {deployment.get("image", "")} {deployment.get("status", "")}'.casefold()
+            if terms and not any(term in haystack for term in terms): continue
+            results.append({"source": "Deployments", "pod": str(deployment.get("name", "workload")), "text": f'{deployment.get("status", "Unknown")} · image {deployment.get("image", "Not available")} · ready {deployment.get("available", 0)}/{deployment.get("desired", 0)}', "timestamp": "current"})
+        source_status["Deployments"] = f"{len([item for item in results if item['source'] == 'Deployments'])} matches"
+    if "history" in plan["sources"]:
+        for event in history.get("events", []):
+            name = str(event.get("pod") or event.get("workload") or "platform")
+            haystack = f'{name} {event.get("title", "")} {event.get("detail", "")}'.casefold()
+            if terms and not any(term in haystack for term in terms): continue
+            results.append({"source": "History", "pod": name, "text": f'{event.get("title", "Signal")}: {event.get("detail", "")}', "timestamp": str(event.get("timestamp", ""))})
+        source_status["History"] = f"{len([item for item in results if item['source'] == 'History'])} matches"
+    if "splunk" in plan["sources"]:
+        splunk_results, error = _search_splunk_for_plan(plan)
+        results.extend({"source": "Splunk", **item} for item in splunk_results)
+        source_status["Splunk"] = error or f"{len(splunk_results)} matches"
+    scope = {**plan, "source_status": source_status}
+    if results:
+        grouped = {}
+        for item in results: grouped[item["source"]] = grouped.get(item["source"], 0) + 1
+        answer = f"L1ControlScope searched the requested operational sources and found {len(results)} result(s): " + ", ".join(f"{count} from {source}" for source, count in grouped.items()) + ".\n" + "\n".join(f'• [{item["source"]}] {item["pod"]} — {item["text"][:260]}' for item in results[:8])
+    else:
+        answer = "L1ControlScope searched the requested operational sources and found no matching evidence. " + "; ".join(f"{source}: {status}" for source, status in source_status.items())
+    evidence = [{"kind": item["source"].casefold(), "pod": item["pod"], "text": item["text"][:260]} for item in results[:3]]
+    return {"answer": answer, "mode": "app-first-query-planner", "sources": list(source_status), "evidence": evidence, "scope": scope}
 
 
 def _session_response(user: dict[str, str], token: str) -> JSONResponse:
@@ -602,6 +891,12 @@ def overview(request: Request) -> dict:
     try:
         snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
         snapshot["alert_acknowledgements"] = _read_alert_acknowledgements()
+        snapshot["source_context"] = {
+            "repository_url": os.getenv("SOURCE_REPOSITORY_URL", "").strip(),
+            "commit_sha": os.getenv("SOURCE_COMMIT_SHA", "").strip(),
+            "default_branch": os.getenv("SOURCE_DEFAULT_BRANCH", "main").strip() or "main",
+            "source_path": os.getenv("SOURCE_PATH", "").strip().strip("/"),
+        }
         return snapshot
     except ClusterConnectionError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
@@ -618,6 +913,15 @@ def observability_history(minutes: int = Query(default=60, ge=5, le=1440)) -> di
 @app.get("/api/incident-workspaces")
 def incident_workspaces() -> dict:
     return {"workspaces": list(reversed(_read_workspaces()))}
+
+
+@app.get("/api/incident-workspaces/{workspace_id}")
+def incident_workspace(workspace_id: str, request: Request) -> dict:
+    require_developer_or_administrator(request)
+    workspace = next((item for item in _read_workspaces() if item.get("id") == workspace_id), None)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Incident workspace not found")
+    return {"workspace": workspace}
 
 
 @app.post("/api/incident-workspaces")
@@ -779,7 +1083,30 @@ def operations_assistant(question: AssistantQuestion, request: Request) -> dict:
         snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
     except ClusterConnectionError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    result = answer_operations_question(snapshot, question.question, question.current_pod)
+    import re
+    range_match = re.search(r"(?:last\s+)?(\d{1,3})\s*(hour|hours|day|days)", question.question, re.IGNORECASE)
+    requested_minutes = 1440
+    if range_match:
+        requested_minutes = int(range_match.group(1)) * (1440 if range_match.group(2).casefold().startswith("day") else 60)
+    requested_minutes = max(5, min(requested_minutes, 1440))
+    history = collector.observability_report(requested_minutes)
+    oldest_sample = history.get("samples", [{}])[0].get("timestamp") if history.get("samples") else None
+    observed_minutes = min(requested_minutes, round((time.time() - float(oldest_sample)) / 60)) if oldest_sample else 0
+    history["coverage"] = {
+        "requested_minutes": requested_minutes,
+        "retention_minutes": 1440,
+        "oldest_sample": oldest_sample,
+        "observed_minutes": observed_minutes,
+        "complete": observed_minutes >= requested_minutes * 0.95,
+    }
+    snapshot["query_history"] = history
+    planner_intent = bool(re.search(r"\b(find|search|look\s+for|splunk)\b", question.question, re.IGNORECASE))
+    if planner_intent:
+        plan = _ask_operations_plan(question.question, snapshot, requested_minutes)
+        result = _execute_ask_operations(plan, snapshot, history)
+        result["generated_at"] = snapshot.get("generated_at")
+    else:
+        result = answer_operations_question(snapshot, question.question, question.current_pod)
     runtime = _read_ollama_settings()
     if not runtime["enabled"]:
         result["runtime"] = {"provider": "python", "configured": False}
@@ -914,6 +1241,59 @@ def test_prometheus_settings(request: Request, candidate: PrometheusSettingsUpda
     except requests.RequestException as error:
         return {"connected": False, "message": "Prometheus is not reachable or authentication was rejected.", "detail": error.__class__.__name__}
     return {"connected": True, "message": "Prometheus is reachable. PulseOps can use its approved metric mappings for capacity history and forecasting."}
+
+
+@app.get("/api/url-monitors")
+async def url_monitors(request: Request) -> dict:
+    require_developer_or_administrator(request)
+    return {"monitors": await _check_url_monitors(), "environments": ["dev", "qa", "uat", "prod"]}
+
+
+@app.get("/api/operations-intelligence/correlations")
+async def operations_intelligence_correlations(request: Request) -> dict:
+    require_developer_or_administrator(request)
+    snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
+    history = collector.observability_report(1440)
+    result = _correlate_operations(snapshot, await _check_url_monitors(), history.get("deployment_changes", []))
+    result["deployment_comparisons"] = _deployment_comparisons(snapshot, history)
+    return result
+
+
+@app.post("/api/url-monitors")
+def create_url_monitor(create: UrlMonitorCreate, request: Request) -> dict:
+    actor = require_administrator(request)
+    monitor = {"id": str(uuid4()), **_validated_monitor(create), "created_at": datetime.now(timezone.utc).isoformat()}
+    monitors = _read_url_monitors()
+    monitors.append(monitor)
+    _write_url_monitors(monitors)
+    _audit("url_monitor.created", actor, monitor["name"], {"environment": monitor["environment"], "url": monitor["url"]})
+    return {"monitor": monitor}
+
+
+@app.put("/api/url-monitors/{monitor_id}")
+def update_url_monitor(monitor_id: str, update: UrlMonitorUpdate, request: Request) -> dict:
+    actor = require_administrator(request)
+    monitors = _read_url_monitors()
+    for index, existing in enumerate(monitors):
+        if existing.get("id") == monitor_id:
+            monitor = {**existing, **_validated_monitor(update), "updated_at": datetime.now(timezone.utc).isoformat()}
+            monitors[index] = monitor
+            _write_url_monitors(monitors)
+            _audit("url_monitor.updated", actor, monitor["name"], {"environment": monitor["environment"], "enabled": monitor["enabled"]})
+            return {"monitor": monitor}
+    raise HTTPException(status_code=404, detail="URL monitor was not found.")
+
+
+@app.delete("/api/url-monitors/{monitor_id}")
+def delete_url_monitor(monitor_id: str, request: Request) -> dict:
+    actor = require_administrator(request)
+    monitors = _read_url_monitors()
+    monitor = next((item for item in monitors if item.get("id") == monitor_id), None)
+    if not monitor:
+        raise HTTPException(status_code=404, detail="URL monitor was not found.")
+    _write_url_monitors([item for item in monitors if item.get("id") != monitor_id])
+    _audit("url_monitor.deleted", actor, monitor["name"], {"environment": monitor["environment"]})
+    return {"deleted": True}
 
 
 @app.get("/")
