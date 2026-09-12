@@ -15,7 +15,7 @@ metadata:
 rules:
   # Pod state, resource limits, node placement, and service inventory.
   - apiGroups: [""]
-    resources: ["pods", "services"]
+    resources: ["pods", "services", "events"]
     verbs: ["get", "list", "watch"]
   # Read recent container logs for the safe log explorer.
   - apiGroups: [""]
@@ -24,6 +24,13 @@ rules:
   # Read deployment and StatefulSet readiness and image versions.
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Optional public endpoints associated with Services.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
     verbs: ["get", "list", "watch"]
   # Read CPU and memory usage when Metrics Server is available.
   - apiGroups: ["metrics.k8s.io"]

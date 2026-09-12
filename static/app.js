@@ -18,9 +18,15 @@ let logExplorerLevel = 'all';
 let logExplorerSearch = '';
 let logExplorerFieldSearch = '';
 let logExplorerRange = 'all';
-let logExplorerBefore = 5;
-let logExplorerAfter = 0;
+let logExplorerBefore = 20;
+let logExplorerAfter = 5;
 let logExplorerLiveTail = true;
+let logExplorerStreamScope = 'all';
+let errorSignatureScope = 'all';
+let directTailSource = null;
+let directTailPod = '';
+let directTailStatus = 'Stopped';
+let directTailRecords = [];
 let activeTab = 'overview';
 let assistantMessages = [{ role: 'assistant', text: 'I am ready to help with the live L1ControlScope view. Try: “Which pod needs attention?” or “Show memory risk.”' }];
 let assistantWaiting = false;
@@ -67,6 +73,7 @@ let developerInvestigationWorkspace = null;
 let sharedInvestigationRestored = false;
 let incidentReplayIndex = -1;
 let incidentReplayTimer = null;
+let notificationSettings = null;
 
 function renderCorrelationIntelligence() {
   const target = document.querySelector('#correlation-intelligence');
@@ -121,7 +128,7 @@ const command = (label, value, note = '') => `<div class="command-card"><div><st
 // These are deliberately global because summary cards and the floating
 // Intelligence assistant can be opened from outside the main workspace setup.
 function pageFromTarget(targetId) {
-  const page = targetId === 'observability-center' ? 'operations' : targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access-center' ? 'access' : targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alert-center' ? 'alerts' : 'overview';
+  const page = targetId === 'operations' || targetId === 'observability-center' ? 'operations' : targetId === 'workloads' || targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'pod-logs' || targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access' || targetId === 'access-center' ? 'access' : targetId === 'intelligence' || targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alerts' || targetId === 'alert-center' ? 'alerts' : 'overview';
   if ((page === 'access' || page === 'data-sources') && !isAdministrator()) return 'overview';
   if ((page === 'logs' || page === 'operations') && !isDeveloperOrAdministrator()) return 'overview';
   return page;
@@ -542,7 +549,7 @@ function ensureDeveloperInvestigationPage() {
     const link = document.createElement('a');
     link.href = '#developer-investigation'; link.innerHTML = '<span>⌕</span> Investigation';
     link.hidden = !isDeveloperOrAdministrator();
-    document.querySelector('.workspace-nav a[href="#intelligence-center"]')?.before(link);
+    document.querySelector('.workspace-nav a[href="#intelligence"]')?.before(link);
   }
   if (!document.querySelector('#developer-investigation')) {
     const panel = document.createElement('article');
@@ -726,25 +733,20 @@ function renderWorkloads(inventory) {
   document.querySelector('#workload-health-content').innerHTML = workloads.length ? `<div class="workload-health-metric"><span>Deployments</span><strong>${workloads.length}</strong><small>monitored workloads</small></div><div class="workload-health-metric"><span>Healthy / completed</span><strong>${ready}</strong><small>ready workloads and finished jobs</small></div><div class="workload-health-metric"><span>Needs attention</span><strong>${attention}</strong><small>not ready workloads</small></div><div class="workload-health-metric"><span>Exposed services</span><strong>${exposed}</strong><small>externally reachable</small></div>` : '<p class="empty">Deployment health appears when workload inventory is connected.</p>';
   const query = deploymentSearch.trim().toLowerCase();
   const healthRank = item => item.status === 'Ready' || item.status === 'Completed' ? 0 : 1;
-  const matching = workloads.filter(item => (!query || `${item.name} ${item.type} ${item.image}`.toLowerCase().includes(query)) && (deploymentFilter === 'all' || deploymentFilter === 'attention' && item.status !== 'Ready' && item.status !== 'Completed' || deploymentFilter === 'ready' && item.status === 'Ready' || deploymentFilter === 'exposed' && item.exposed || deploymentFilter === 'completed' && item.status === 'Completed')).sort((left, right) => deploymentSort === 'name' ? left.name.localeCompare(right.name) : healthRank(right) - healthRank(left) || left.name.localeCompare(right.name));
+  const matching = workloads.filter(item => (!query || `${item.name} ${item.type} ${item.image}`.toLowerCase().includes(query)) && (deploymentFilter === 'all' || deploymentFilter === 'attention' && item.status !== 'Ready' && item.status !== 'Completed' || deploymentFilter === 'ready' && item.status === 'Ready' || deploymentFilter === 'exposed' && item.exposed || deploymentFilter === 'completed' && item.status === 'Completed')).sort((left, right) => left.name.localeCompare(right.name));
   const pages = Math.max(1, Math.ceil(matching.length / deploymentPageSize));
   deploymentPage = Math.min(deploymentPage, pages);
   const start = (deploymentPage - 1) * deploymentPageSize;
   const visible = matching.slice(start, start + deploymentPageSize);
-  const views = savedWorkloadViews();
-  document.querySelector('#deployment-list-controls').innerHTML = `<div class="inventory-filters"><label>Find deployment <input id="deployment-search" value="${escapeHtml(deploymentSearch)}" placeholder="Name, type, or image"></label><button type="button" data-deployment-search>Search</button><label>Show <select id="deployment-filter"><option value="all" ${deploymentFilter === 'all' ? 'selected' : ''}>All deployments</option><option value="attention" ${deploymentFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="ready" ${deploymentFilter === 'ready' ? 'selected' : ''}>Ready</option><option value="exposed" ${deploymentFilter === 'exposed' ? 'selected' : ''}>Exposed</option><option value="completed" ${deploymentFilter === 'completed' ? 'selected' : ''}>Completed</option></select></label><label>Order <select id="deployment-sort"><option value="attention" ${deploymentSort === 'attention' ? 'selected' : ''}>Needs attention first</option><option value="name" ${deploymentSort === 'name' ? 'selected' : ''}>Name A–Z</option></select></label><label>Saved view <select id="deployment-view"><option value="">Choose a view</option>${views.map((view, index) => `<option value="${index}">${escapeHtml(view.name)}</option>`).join('')}</select></label><button type="button" data-deployment-view-save>Save view</button></div><div class="inventory-pagination"><span>${matching.length ? `Showing ${start + 1}–${Math.min(start + deploymentPageSize, matching.length)} of ${matching.length}` : 'No matching deployments'} · ${workloads.length} total</span><label>Rows <select id="deployment-page-size"><option value="25" ${deploymentPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${deploymentPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${deploymentPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-deployment-prev ${deploymentPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${deploymentPage} of ${pages}</span><button type="button" data-deployment-next ${deploymentPage === pages ? 'disabled' : ''}>Next</button></div>`;
+  document.querySelector('#deployment-list-controls').innerHTML = `<div class="inventory-filters"><label>Find deployment <select id="deployment-picker"><option value="">Choose a deployment</option>${[...workloads].sort((left, right) => left.name.localeCompare(right.name)).map(workload => `<option value="${escapeHtml(workload.name)}">${escapeHtml(workload.name)} · ${escapeHtml(workload.status)}</option>`).join('')}</select></label><label>Show <select id="deployment-filter"><option value="all" ${deploymentFilter === 'all' ? 'selected' : ''}>All deployments</option><option value="attention" ${deploymentFilter === 'attention' ? 'selected' : ''}>Needs attention</option><option value="ready" ${deploymentFilter === 'ready' ? 'selected' : ''}>Ready</option><option value="exposed" ${deploymentFilter === 'exposed' ? 'selected' : ''}>Exposed</option><option value="completed" ${deploymentFilter === 'completed' ? 'selected' : ''}>Completed</option></select></label></div><div class="inventory-pagination"><span>${matching.length ? `Showing ${start + 1}–${Math.min(start + deploymentPageSize, matching.length)} of ${matching.length}` : 'No matching deployments'} · ${workloads.length} total</span><label>Rows <select id="deployment-page-size"><option value="25" ${deploymentPageSize === 25 ? 'selected' : ''}>25</option><option value="50" ${deploymentPageSize === 50 ? 'selected' : ''}>50</option><option value="100" ${deploymentPageSize === 100 ? 'selected' : ''}>100</option></select></label><button type="button" data-deployment-prev ${deploymentPage === 1 ? 'disabled' : ''}>Previous</button><span>Page ${deploymentPage} of ${pages}</span><button type="button" data-deployment-next ${deploymentPage === pages ? 'disabled' : ''}>Next</button></div>`;
   const changed = new Set((observabilityData.events || []).filter(event => event.kind === 'deployment').map(event => event.pod));
-  target.innerHTML = visible.length ? visible.map(workload => `<tr><td><button class="deployment-link" data-deployment-open="${escapeHtml(workload.name)}">${escapeHtml(workload.name)}<small>${changed.has(workload.name) ? 'Changed recently · inspect →' : 'Inspect resources →'}</small></button></td><td>${escapeHtml(workload.type)}</td><td>${workload.status === 'Completed' ? 'Completed' : `${workload.available}/${workload.desired} available`}</td><td><small>${escapeHtml(workload.image || 'Not available')}</small></td><td>${workload.exposed ? 'Exposed' : 'Internal'}</td><td><span class="${severityClass(workload.status === 'Ready' || workload.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(workload.status)}</span></td></tr>`).join('') : '<tr><td colspan="6" class="empty">No deployments match the selected filter.</td></tr>';
+  const dateLabel = value => value ? new Date(value).toLocaleString() : 'Not reported';
+  const serviceLabel = workload => (workload.services || []).map(service => service.name).join(', ') || 'No matching service';
+  const routeLabel = workload => (workload.routes || []).join(', ') || (workload.exposed ? 'Published service port' : 'Internal service');
+  target.innerHTML = visible.length ? visible.map(workload => `<tr><td><button class="deployment-link" data-deployment-open="${escapeHtml(workload.name)}">${escapeHtml(workload.name)}<small>${changed.has(workload.name) ? 'Changed recently · inspect →' : 'Inspect resources →'}</small></button></td><td>${escapeHtml(workload.type)}</td><td>${workload.status === 'Completed' ? 'Completed' : `${workload.available}/${workload.desired} ready`}<small>${workload.updated == null ? 'Rollout count not available locally' : `${workload.updated} updated`} · ${workload.unavailable ?? 0} unavailable</small></td><td><small>${escapeHtml(serviceLabel(workload))}</small></td><td><small>${escapeHtml(workload.image || 'Not available')}</small></td><td><small>${escapeHtml(dateLabel(workload.deployed_at))}</small></td><td><small>${escapeHtml(routeLabel(workload))}</small></td><td><span class="${severityClass(workload.status === 'Ready' || workload.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(workload.status)}</span></td></tr>`).join('') : '<tr><td colspan="8" class="empty">No deployments match the selected filter.</td></tr>';
   document.querySelectorAll('[data-deployment-open]').forEach(button => button.addEventListener('click', () => { selectedDeploymentName = button.dataset.deploymentOpen; selectedDeploymentResource = undefined; renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
-  document.querySelector('[data-deployment-search]').addEventListener('click', () => { deploymentSearch = document.querySelector('#deployment-search').value; deploymentPage = 1; renderWorkloads(inventory); });
-  // Keep the draft through the automatic telemetry refresh; filtering still
-  // happens only when Search or Enter is used, so typing never redraws the field.
-  document.querySelector('#deployment-search').addEventListener('input', event => { deploymentSearch = event.target.value; });
-  document.querySelector('#deployment-search').addEventListener('keypress', event => { if (event.key === 'Enter') document.querySelector('[data-deployment-search]').click(); });
+  document.querySelector('#deployment-picker').addEventListener('change', event => { if (!event.target.value) return; selectedDeploymentName = event.target.value; selectedDeploymentResource = undefined; renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   document.querySelector('#deployment-filter').addEventListener('change', event => { deploymentFilter = event.target.value; deploymentPage = 1; renderWorkloads(inventory); });
-  document.querySelector('#deployment-sort').addEventListener('change', event => { deploymentSort = event.target.value; deploymentPage = 1; renderWorkloads(inventory); });
-  document.querySelector('#deployment-view').addEventListener('change', event => { const view = views[Number(event.target.value)]; if (!view) return; deploymentFilter = view.filter || 'all'; deploymentSort = view.sort || 'attention'; deploymentPageSize = Number(view.page_size) || 25; deploymentPage = 1; renderWorkloads(inventory); });
-  document.querySelector('[data-deployment-view-save]').addEventListener('click', saveWorkloadView);
   document.querySelector('#deployment-page-size').addEventListener('change', event => { deploymentPageSize = Number(event.target.value); deploymentPage = 1; renderWorkloads(inventory); });
   document.querySelector('[data-deployment-prev]').addEventListener('click', () => { deploymentPage -= 1; renderWorkloads(inventory); });
   document.querySelector('[data-deployment-next]').addEventListener('click', () => { deploymentPage += 1; renderWorkloads(inventory); });
@@ -759,6 +761,27 @@ function deploymentMemoryChart(history) {
   return `<div class="deployment-memory-chart"><div class="timeline-heading"><span>Aggregate memory history</span><small>All resources in this deployment</small></div><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" class="chart-axis"/><polyline points="${points}" fill="none" stroke="#6d62d9" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="chart-range"><span>${values[0].toFixed(1)} MiB</span><span>${values.at(-1).toFixed(1)} MiB now</span></div></div>`;
 }
 
+function workloadDetailsHtml(workload, resources) {
+  const namespace = resources[0]?.pod?.namespace || (data?.mode === 'docker' ? 'local-docker' : 'YOUR_NAMESPACE');
+  const services = workload.services || [];
+  const containers = workload.containers || [];
+  const conditions = workload.conditions || [];
+  const workloadEvents = (data?.pod_events || []).filter(event => resources.some(resource => resource.pod?.name === event.pod)).slice(0, 5);
+  // The command section is removed from the rendered panel below. Keeping this
+  // value while the legacy template is retired prevents it from interrupting
+  // the live workload rendering.
+  const commandPrefix = `kubectl -n ${namespace}`;
+  const replica = (label, value) => `<div><span>${label}</span><strong>${value}</strong></div>`;
+  return `<section class="workload-details"><header><div><p class="eyebrow">WORKLOAD DETAILS</p><h3>Deployment configuration and runtime view</h3><small>Read-only details equivalent to the useful parts of <code>kubectl get deployment</code> and <code>kubectl describe deployment</code>.</small></div><span>${escapeHtml(workload.type)}</span></header><div class="workload-detail-grid"><article><p class="eyebrow">REPLICAS & ROLLOUT</p><div class="workload-replicas">${replica('Desired', workload.desired ?? '—')}${replica('Updated', workload.updated ?? '—')}${replica('Available', workload.available ?? '—')}${replica('Unavailable', workload.unavailable ?? '—')}</div><p class="workload-note">Strategy: <b>${escapeHtml(workload.strategy || 'Not available')}</b></p></article><article><p class="eyebrow">ASSOCIATED SERVICES</p>${services.length ? `<ul class="workload-detail-list">${services.map(service => `<li><div><b>${escapeHtml(service.name)}</b><small>${escapeHtml(service.type)} · ${(service.ports || []).map(escapeHtml).join(', ') || 'No ports reported'}</small></div><span class="status ${service.type === 'LoadBalancer' || service.type === 'NodePort' ? 'warning' : 'healthy'}">${service.type === 'LoadBalancer' || service.type === 'NodePort' ? 'exposed' : 'internal'}</span></li>`).join('')}</ul>` : '<p class="workload-empty">No Kubernetes Service selector currently matches this workload.</p>'}</article><article><p class="eyebrow">CONTAINERS & RESOURCES</p>${containers.length ? `<ul class="workload-detail-list containers">${containers.map(container => `<li><div><b>${escapeHtml(container.name)}</b><small>Requests: ${escapeHtml(Object.entries(container.requests || {}).map(([key, value]) => `${key} ${value}`).join(' · ') || 'Not set')}</small><small>Limits: ${escapeHtml(Object.entries(container.limits || {}).map(([key, value]) => `${key} ${value}`).join(' · ') || 'Not set')}</small></div></li>`).join('')}</ul>` : '<p class="workload-empty">Container requests and limits are available after Kubernetes deployment.</p>'}</article><article><p class="eyebrow">SAFE CONFIGURATION REFERENCES</p>${containers.length ? `<ul class="workload-detail-list config">${containers.flatMap(container => [ ...(container.environment_sources || []).map(item => `${container.name}: ${item}`), ...(container.environment_variables || []).slice(0, 8).map(item => `${container.name}: variable ${item}`) ]).slice(0, 12).map(item => `<li><div><small>${escapeHtml(item)}</small></div></li>`).join('') || '<li><div><small>No ConfigMap, Secret, or environment-variable names reported.</small></div></li>'}</ul>` : '<p class="workload-empty">Configuration references are intentionally shown only for Kubernetes workloads. Secret values are never displayed.</p>'}</article><article><p class="eyebrow">STATUS CONDITIONS</p>${conditions.length ? `<ul class="workload-detail-list conditions">${conditions.map(condition => `<li><div><b>${escapeHtml(condition.type)}: ${escapeHtml(condition.status)}</b><small>${escapeHtml(condition.reason || condition.message || 'No additional reason reported')}</small></div></li>`).join('')}</ul>` : '<p class="workload-empty">No Kubernetes condition details are available for this local workload.</p>'}</article><article><p class="eyebrow">RECENT WORKLOAD EVENTS</p>${workloadEvents.length ? `<ul class="workload-detail-list conditions">${workloadEvents.map(event => `<li><div><b>${escapeHtml(event.reason || 'Kubernetes event')}</b><small>${escapeHtml(event.message || '')}</small></div></li>`).join('')}</ul>` : '<p class="workload-empty">No native Kubernetes events are available in the current source.</p>'}</article></div><details class="workload-commands"><summary>Read-only kubectl commands</summary><div>${command('Get deployment', `${commandPrefix} get ${workload.type === 'StatefulSet' ? 'statefulset' : 'deployment'} ${workload.name} -o wide`, 'Current replicas and rollout status')}${command('Describe deployment', `${commandPrefix} describe ${workload.type === 'StatefulSet' ? 'statefulset' : 'deployment'} ${workload.name}`, 'Conditions, events, image and configuration references')}${command('List owned pods', `${commandPrefix} get pods -l app=${workload.name} -o wide`, 'Adjust the selector if your workload uses different labels')}</div></details></section>`;
+}
+
+function workloadReleaseHtml(workload) {
+  const deployedAt = workload.deployed_at ? new Date(workload.deployed_at).toLocaleString() : 'Not reported by the current source';
+  const routes = workload.routes || [];
+  const serviceDetails = (workload.services || []).map(service => `${service.name} (${service.type})`).join(' · ') || 'No matching Service';
+  return `<section class="workload-release-summary"><div><p class="eyebrow">DELIVERY & ACCESS</p><h3>Release and service details</h3><small>Shown from the connected runtime. Route information appears automatically when an Ingress or OpenShift Route is available.</small></div><dl><div><dt>Last deployed</dt><dd>${escapeHtml(deployedAt)}</dd></div><div><dt>Revision</dt><dd>${escapeHtml(workload.revision || 'Not reported')}</dd></div><div><dt>Image version</dt><dd>${escapeHtml(workload.image || 'Not reported')}</dd></div><div><dt>Associated service</dt><dd>${escapeHtml(serviceDetails)}</dd></div><div><dt>Route / endpoint</dt><dd>${escapeHtml(routes.join(', ') || (workload.exposed ? 'Published service port' : 'Internal cluster service'))}</dd></div></dl></section>`;
+}
+
 function renderDeploymentInspector(deployments) {
   const target = document.querySelector('#deployment-inspector-content');
   if (!deployments.length) { target.innerHTML = '<p class="empty">Deployment resource data is unavailable until live workload inventory is connected.</p>'; return; }
@@ -770,10 +793,13 @@ function renderDeploymentInspector(deployments) {
   const summary = selected.summary || {};
   const changes = (observabilityData.deployment_changes || []).filter(event => event.pod === selected.name).slice(0, 5);
   const memoryPercent = summary.memory_limit_mib ? Math.min(100, summary.memory_mib / summary.memory_limit_mib * 100) : 0;
-  const changeHtml = changes.length ? changes.map(event => `<li><strong>${escapeHtml(event.title)}</strong><small>${new Date(event.timestamp * 1000).toLocaleString()} · ${escapeHtml(event.detail || '')}</small></li>`).join('') : '<li><strong>No recent deployment change</strong><small>No image or readiness change was recorded in the selected observation window.</small></li>';
-  target.innerHTML = `<div class="deployment-selector">${deployments.map(item => `<button class="${item.name === selected.name ? 'active' : ''}" data-deployment-select="${escapeHtml(item.name)}">${escapeHtml(item.name)}<small>${item.available}/${item.desired} ready</small></button>`).join('')}</div><div class="deployment-summary-grid"><div class="deployment-overview"><span class="${severityClass(selected.status === 'Ready' || selected.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(selected.status)}</span><h3>${escapeHtml(selected.name)}</h3><p>${escapeHtml(selected.type)} · ${escapeHtml(selected.image)}</p><div class="deployment-stat-grid"><span><b>${selected.available}/${selected.desired}</b> ready</span><span><b>${summary.resource_count}</b> resources</span><span><b>${summary.restarts}</b> restarts</span><span><b>${summary.cpu_percent}%</b> total CPU</span></div></div><div class="memory-donut-wrap"><div class="memory-donut" style="--memory:${memoryPercent}%"><strong>${memoryPercent.toFixed(0)}%</strong><small>memory used</small></div><p>${summary.memory_mib} MiB / ${summary.memory_limit_mib || '—'} MiB</p></div><div class="deployment-trend">${deploymentMemoryChart(selected.memory_history || [])}</div></div><section class="deployment-changes"><div class="timeline-heading"><span>Recent deployment changes</span><small>Image and readiness changes from the current observation window</small></div><ul>${changeHtml}</ul></section><div class="deployment-resource-grid"><section class="deployment-resource-list"><div class="timeline-heading"><span>Resources</span><small>Click one for details</small></div>${resources.length ? resources.map(item => `<button class="deployment-resource ${item.pod.name === selectedDeploymentResource ? 'active' : ''}" data-resource-select="${escapeHtml(item.pod.name)}"><span class="${severityClass(item.pod.risk)}">${escapeHtml(item.pod.status)}</span><strong>${escapeHtml(item.pod.name)}</strong><small>CPU ${percent(item.pod.cpu_percent)} · Memory ${percent(item.pod.memory_percent)} · Restarts ${item.pod.restarts}</small></button>`).join('') : '<p class="empty">No matching resource was found for this deployment.</p>'}</section><section class="deployment-resource-detail">${resource ? `<p class="eyebrow">SELECTED RESOURCE</p><h3>${escapeHtml(resource.pod.name)}</h3><div class="detail-grid"><div class="detail-metric"><span>CPU</span><strong>${percent(resource.pod.cpu_percent)}</strong><small>${resource.pod.cpu_millicores} millicores</small></div><div class="detail-metric"><span>Memory</span><strong>${resource.pod.memory_mib} MiB</strong><small>${percent(resource.pod.memory_percent)} of limit</small></div><div class="detail-metric"><span>Forecast</span><strong>${resource.forecast.forecast_percent ?? resource.pod.memory_percent}%</strong><small>15-minute projected memory</small></div><div class="detail-metric"><span>Signals</span><strong>${resource.analysis.counts?.errors || 0}</strong><small>Current log errors</small></div></div><p class="helper">${escapeHtml(resource.analysis.findings?.[0] || 'No critical signal in the current log sample.')}</p><button class="open-resource-detail" data-open-pod="${escapeHtml(resource.pod.name)}">Open full pod investigation</button>` : '<p class="empty">Select a resource to inspect it.</p>'}</section></div>`;
+  const changeHtml = changes.length ? changes.map(event => `<li><strong>${escapeHtml(event.title)}</strong><small>${new Date(event.timestamp * 1000).toLocaleString()} · ${escapeHtml(event.detail || '')}</small></li>`).join('') : '<li class="deployment-change-empty"><span>✓</span><div><strong>No deployment change detected</strong><small>Current local telemetry has not observed an image, readiness, or restart change for this workload yet.</small></div><em>Healthy baseline</em></li>';
+  target.innerHTML = `<div class="deployment-selector">${deployments.map(item => `<button class="${item.name === selected.name ? 'active' : ''}" data-deployment-select="${escapeHtml(item.name)}">${escapeHtml(item.name)}<small>${item.available}/${item.desired} ready</small></button>`).join('')}</div><div class="deployment-summary-grid"><div class="deployment-overview"><span class="${severityClass(selected.status === 'Ready' || selected.status === 'Completed' ? 'healthy' : 'warning')}">${escapeHtml(selected.status)}</span><h3>${escapeHtml(selected.name)}</h3><p>${escapeHtml(selected.type)} · ${escapeHtml(selected.image)}</p><div class="deployment-stat-grid"><span><b>${selected.available}/${selected.desired}</b> ready</span><span><b>${summary.resource_count}</b> resources</span><span><b>${summary.restarts}</b> restarts</span><span><b>${summary.cpu_percent}%</b> total CPU</span></div></div><div class="memory-donut-wrap"><div class="memory-donut" style="--memory:${memoryPercent}%"><strong>${memoryPercent.toFixed(0)}%</strong><small>memory used</small></div><p>${summary.memory_mib} MiB / ${summary.memory_limit_mib || '—'} MiB</p></div><div class="deployment-trend">${deploymentMemoryChart(selected.memory_history || [])}</div></div><section class="deployment-changes"><div class="panel-title deployment-history-title"><div><p class="eyebrow">DEPLOYMENT HISTORY</p><h2>Recent deployment changes</h2></div></div><p class="helper">Image and readiness changes from the current observation window.</p><ul>${changeHtml}</ul></section><div class="deployment-resource-grid"><section class="deployment-resource-list"><div class="timeline-heading"><span>Resources</span><small>Click one for details</small></div>${resources.length ? resources.map(item => `<button class="deployment-resource ${item.pod.name === selectedDeploymentResource ? 'active' : ''}" data-resource-select="${escapeHtml(item.pod.name)}"><span class="${severityClass(item.pod.risk)}">${escapeHtml(item.pod.status)}</span><strong>${escapeHtml(item.pod.name)}</strong><small>CPU ${percent(item.pod.cpu_percent)} · Memory ${percent(item.pod.memory_percent)} · Restarts ${item.pod.restarts}</small></button>`).join('') : '<p class="empty">No matching resource was found for this deployment.</p>'}</section><section class="deployment-resource-detail">${resource ? `<p class="eyebrow">SELECTED RESOURCE</p><h3>${escapeHtml(resource.pod.name)}</h3><div class="detail-grid"><div class="detail-metric"><span>CPU</span><strong>${percent(resource.pod.cpu_percent)}</strong><small>${resource.pod.cpu_millicores} millicores</small></div><div class="detail-metric"><span>Memory</span><strong>${resource.pod.memory_mib} MiB</strong><small>${percent(resource.pod.memory_percent)} of limit</small></div><div class="detail-metric"><span>Forecast</span><strong>${resource.forecast.forecast_percent ?? resource.pod.memory_percent}%</strong><small>15-minute projected memory</small></div><div class="detail-metric"><span>Signals</span><strong>${resource.analysis.counts?.errors || 0}</strong><small>Current log errors</small></div></div><p class="helper">${escapeHtml(resource.analysis.findings?.[0] || 'No critical signal in the current log sample.')}</p><button class="open-resource-detail" data-open-pod="${escapeHtml(resource.pod.name)}">Open full pod investigation</button>` : '<p class="empty">Select a resource to inspect it.</p>'}</section></div>`;
   const evidenceCount = (data?.incident_evidence || []).filter(item => resources.some(resourceItem => resourceItem.pod.name === item.pod)).length;
   target.querySelector('.deployment-changes')?.insertAdjacentHTML('beforebegin', `<section class="deployment-impact-map"><button class="impact-node"><small>WORKLOAD</small><strong>${escapeHtml(selected.name)}</strong><small>${escapeHtml(selected.type)}</small></button><button class="impact-node"><small>SERVICE</small><strong>${selected.exposed ? 'Exposed service' : 'Internal service'}</strong><small>${selected.exposed ? 'Reachable outside cluster' : 'Cluster-only access'}</small></button><button class="impact-node actionable" data-impact-resource><small>PODS / CONTAINERS</small><strong>${summary.resource_count || 0} monitored</strong><small>${selected.available}/${selected.desired} ready</small></button><button class="impact-node actionable" data-impact-logs><small>LIVE LOGS</small><strong>${resource?.analysis?.counts?.errors || 0} errors</strong><small>Open current pod context</small></button><button class="impact-node actionable" data-impact-evidence><small>INCIDENT EVIDENCE</small><strong>${evidenceCount} captures</strong><small>Restart and failure snapshots</small></button></section>`);
+  target.querySelector('.deployment-impact-map')?.insertAdjacentHTML('afterend', workloadDetailsHtml(selected, resources));
+  target.querySelector('.workload-commands')?.remove();
+  target.querySelector('.workload-details')?.insertAdjacentHTML('afterend', workloadReleaseHtml(selected));
   const selector = target.querySelector('.deployment-selector');
   selector.innerHTML = `<label>Choose deployment <select id="deployment-select">${[...deployments].sort((left, right) => left.name.localeCompare(right.name)).map(item => `<option value="${escapeHtml(item.name)}" ${item.name === selected.name ? 'selected' : ''}>${escapeHtml(item.name)} · ${escapeHtml(item.status)}</option>`).join('')}</select></label><span>${deployments.length} deployments available</span>`;
   selector.querySelector('#deployment-select').addEventListener('change', event => { selectedDeploymentName = event.target.value; selectedDeploymentResource = undefined; renderDeploymentInspector(deployments); });
@@ -795,6 +821,10 @@ function renderDeploymentInspector(deployments) {
     setWorkspacePage('alerts');
     document.querySelector('.incident-evidence-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
+  target.querySelectorAll('.copy-command').forEach(button => button.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(button.dataset.command); button.textContent = 'Copied'; setTimeout(() => { button.textContent = 'Copy'; }, 1200); }
+    catch { window.prompt('Copy this command', button.dataset.command); }
+  }));
 }
 
 function savedLogQueries() {
@@ -843,6 +873,19 @@ function logSignature(message) {
   return String(message || '').toLowerCase().replace(/[0-9a-f]{8}-[0-9a-f-]{20,}/gi, '[uuid]').replace(/\b[0-9a-f]{8,}\b/gi, '[id]').replace(/\b\d+(?:\.\d+){1,3}\b/g, '[number]').replace(/\b\d+\b/g, '#').replace(/\s+/g, ' ').trim().slice(0, 220);
 }
 
+function describeErrorSignature(signature, levels) {
+  const text = String(signature || '').toLowerCase();
+  const severity = levels?.has('critical') || levels?.has('error') ? 'Needs attention' : 'Warning to review';
+  if (/database|postgres|mysql|mongodb|connection.*(timeout|refused)|sql/.test(text)) return { title: 'Database connection problem', impact: 'Requests that need data may fail or become slow.', severity };
+  if (/timeout|timed out|deadline exceeded/.test(text)) return { title: 'Application request timed out', impact: 'Some users or dependent services may experience delays.', severity };
+  if (/out of memory|oom|memory limit|killed process/.test(text)) return { title: 'Application ran out of memory', impact: 'The workload may restart or stop handling requests.', severity: 'Needs attention' };
+  if (/unauthorized|forbidden|authentication|access denied/.test(text)) return { title: 'Access or authentication problem', impact: 'Affected users or services may be unable to complete a request.', severity };
+  if (/5\d\d|internal server error|bad gateway|service unavailable/.test(text)) return { title: 'Application server error', impact: 'One or more application requests may have failed.', severity };
+  if (/not found|\b404\b/.test(text)) return { title: 'Requested resource was not found', impact: 'The affected request cannot complete until the path or resource is corrected.', severity: 'Warning to review' };
+  if (/refused|unreachable|dns|host not found/.test(text)) return { title: 'Service connection problem', impact: 'The application may not be able to reach a required dependency.', severity };
+  return { title: 'Repeated application error', impact: 'Review the matching logs to confirm user impact and the next action.', severity };
+}
+
 function correlationIds(record) {
   const ids = new Set();
   const accepted = /^(request|request_id|requestid|x-request-id|trace|trace_id|traceid|correlation|correlation_id|correlationid)$/i;
@@ -873,6 +916,94 @@ function requestTraceHtml(selected) {
   Object.entries(data?.structured_logs || {}).forEach(([pod, records]) => records.forEach(record => { if (correlationIds(record).includes(id) || String(record.raw || '').includes(id)) events.push({ pod, record }); }));
   events.sort((left, right) => Date.parse(left.record.timestamp || 0) - Date.parse(right.record.timestamp || 0));
   return `<section class="request-trace"><header><div><p class="eyebrow">REQUEST TRACE</p><h3>${escapeHtml(id)}</h3></div><span>${events.length} event${events.length === 1 ? '' : 's'} · ${new Set(events.map(item => item.pod)).size} pod${new Set(events.map(item => item.pod)).size === 1 ? '' : 's'}</span></header><div>${events.slice(0, 50).map((item, index) => `<article><i>${index + 1}</i><div><b>${escapeHtml(item.pod)}</b><small>${escapeHtml(item.record.timestamp || `Entry ${item.record.index + 1}`)} · ${escapeHtml(item.record.level)}</small><p>${escapeHtml(item.record.message)}</p></div></article>`).join('')}</div></section>`;
+}
+
+function directTailHtml() {
+  const active = Boolean(directTailSource);
+  const statusClass = /^connected/i.test(directTailStatus) ? 'healthy' : /error|unavailable/i.test(directTailStatus) ? 'critical' : active ? 'warning' : 'healthy';
+  return `<section id="direct-live-tail" class="direct-live-tail"><header><div><p class="eyebrow">DIRECT LIVE TAIL</p><h3>${escapeHtml(directTailPod || logExplorerPodName)}</h3><small>Reads new log lines directly from this workload. It does not restart or change the pod.</small></div><div class="direct-tail-controls"><span class="${severityClass(statusClass)}">${escapeHtml(directTailStatus)}</span><button type="button" class="${active ? 'danger' : 'primary'}" data-direct-tail-toggle>${active ? 'Stop tail' : 'Start live tail'}</button><button type="button" data-direct-tail-clear ${directTailRecords.length ? '' : 'disabled'}>Clear</button></div></header><div class="direct-tail-list">${directTailRecords.length ? directTailRecords.slice(-300).map(record => `<article><span class="${severityClass(record.level === 'warn' ? 'warning' : record.level === 'error' || record.level === 'critical' ? 'critical' : 'healthy')}">${escapeHtml(record.level)}</span><time>${escapeHtml(record.timestamp || 'now')}</time><p>${escapeHtml(record.message)}</p></article>`).join('') : '<p class="direct-tail-empty">Start Live Tail when you want to watch new log lines while testing this pod.</p>'}</div></section>`;
+}
+
+function podLogEvidenceHtml() {
+  const podName = logExplorerPodName;
+  const deployment = (data?.deployments || []).find(item => (item.resources || []).some(resource => resource.pod?.name === podName));
+  const nativeEvents = (data?.pod_events || []).filter(event => event.pod === podName).map(event => ({ ...event, title: event.reason || 'Kubernetes event', detail: event.message || '', timestamp: event.timestamp, sourceLabel: 'Kubernetes' }));
+  const observedEvents = (observabilityData?.events || []).filter(event => event.pod === podName || event.workload === deployment?.name).map(event => ({ ...event, title: event.title || 'Runtime event', detail: event.detail || '', timestamp: event.timestamp ? new Date(Number(event.timestamp) * 1000).toISOString() : null, sourceLabel: 'PulseOps observed' }));
+  const byIdentity = new Map();
+  [...nativeEvents, ...observedEvents].forEach(event => {
+    const identity = `${event.sourceLabel}|${event.title}|${event.detail}|${event.timestamp || ''}`;
+    if (!byIdentity.has(identity)) byIdentity.set(identity, event);
+  });
+  const events = [...byIdentity.values()].sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0)).slice(0, 8);
+  const comparison = (correlationIntelligence?.deployment_comparisons || []).find(item => item.workload === deployment?.name);
+  const releaseText = comparison ? comparison.status === 'regressed' ? 'Signals worsened after the observed release' : comparison.status === 'stable' ? 'No material regression found after the observed release' : 'Collecting an earlier baseline for this release' : 'No observed deployment change is available yet';
+  const eventEmpty = data?.mode === 'docker' ? 'Local Docker does not expose Kubernetes events. Runtime, restart, and deployment changes will appear here when they are detected.' : 'No recent Kubernetes or runtime events were found for this pod.';
+  return `<section class="pod-log-evidence"><div class="pod-log-events"><header><div><p class="eyebrow">POD EVENTS</p><h3>Events alongside this pod’s logs</h3><small>Native Kubernetes events when available, plus PulseOps-detected runtime and deployment changes.</small></div><span>${events.length} recent</span></header><div class="pod-log-event-list">${events.length ? events.map(event => `<article><span class="${severityClass(event.severity || 'healthy')}">${escapeHtml(event.sourceLabel)}</span><div><b>${escapeHtml(event.title)}</b><p>${escapeHtml(event.detail)}</p></div><time>${event.timestamp ? escapeHtml(new Date(event.timestamp).toLocaleString()) : 'Time unavailable'}</time></article>`).join('') : `<p class="pod-log-event-empty">${escapeHtml(eventEmpty)}</p>`}</div></div><aside class="pod-release-summary"><p class="eyebrow">LAST OBSERVED RELEASE</p><h3>${escapeHtml(deployment?.name || 'Deployment mapping unavailable')}</h3><span class="status ${comparison?.status === 'regressed' ? 'critical' : comparison?.status === 'stable' ? 'healthy' : 'warning'}">${escapeHtml(comparison?.status === 'regressed' ? 'Review required' : comparison?.status === 'stable' ? 'Stable' : 'Baseline pending')}</span><p>${escapeHtml(releaseText)}</p>${comparison ? `<dl><div><dt>Before errors</dt><dd>${comparison.before?.errors ?? '—'}</dd></div><div><dt>After errors</dt><dd>${comparison.after?.errors ?? '—'}</dd></div><div><dt>Restart change</dt><dd>${comparison.deltas?.restarts == null ? '—' : `${comparison.deltas.restarts > 0 ? '+' : ''}${comparison.deltas.restarts}`}</dd></div></dl>` : '<small>PulseOps compares retained readiness, restart, capacity, and log-error signals after a release is observed.</small>'}</aside></section>`;
+}
+
+function renderDirectTail() {
+  const current = document.querySelector('#direct-live-tail');
+  if (current) current.outerHTML = directTailHtml();
+  bindDirectTailControls();
+}
+
+function stopDirectTail(status = 'Stopped') {
+  directTailSource?.close();
+  directTailSource = null;
+  directTailStatus = status;
+}
+
+function startDirectTail() {
+  const pod = logExplorerPodName;
+  stopDirectTail('Connecting…');
+  directTailPod = pod;
+  directTailRecords = [];
+  renderDirectTail();
+  const source = new EventSource(`/api/pods/${encodeURIComponent(pod)}/tail`);
+  directTailSource = source;
+  source.addEventListener('status', event => {
+    if (source !== directTailSource) return;
+    const message = JSON.parse(event.data);
+    directTailStatus = message.state === 'connected' ? 'Connected' : String(message.state || 'Connected');
+    renderDirectTail();
+  });
+  source.addEventListener('log', event => {
+    if (source !== directTailSource) return;
+    const payload = JSON.parse(event.data);
+    directTailRecords.push(payload.record);
+    if (directTailRecords.length > 500) directTailRecords = directTailRecords.slice(-500);
+    renderDirectTail();
+  });
+  source.addEventListener('tail-error', event => {
+    if (source !== directTailSource) return;
+    const payload = JSON.parse(event.data);
+    stopDirectTail(payload.message || 'Live tail unavailable');
+    renderDirectTail();
+  });
+  source.addEventListener('complete', () => {
+    if (source !== directTailSource) return;
+    stopDirectTail('Stream ended');
+    renderDirectTail();
+  });
+  source.onerror = () => {
+    if (source !== directTailSource) return;
+    directTailStatus = 'Reconnecting…';
+    renderDirectTail();
+  };
+}
+
+function bindDirectTailControls() {
+  const controls = document.querySelector('.direct-tail-controls');
+  if (controls && !controls.querySelector('[data-direct-tail-pod]')) controls.insertAdjacentHTML('afterbegin', `<label class="direct-tail-picker" aria-label="Pod for direct live tail"><select data-direct-tail-pod aria-label="Select pod for direct live tail">${(data?.pods || []).map(pod => `<option value="${escapeHtml(pod.name)}" ${pod.name === (directTailPod || logExplorerPodName) ? 'selected' : ''}>${escapeHtml(pod.name)}</option>`).join('')}</select></label>`);
+  controls?.querySelector('[data-direct-tail-pod]')?.addEventListener('change', event => {
+    logExplorerPodName = event.target.value;
+    directTailPod = event.target.value;
+    logExplorerSelectedIndex = undefined;
+    renderLogExplorer();
+    startDirectTail();
+  });
+  document.querySelector('[data-direct-tail-toggle]')?.addEventListener('click', () => directTailSource ? (stopDirectTail(), renderDirectTail()) : startDirectTail());
+  document.querySelector('[data-direct-tail-clear]')?.addEventListener('click', () => { directTailRecords = []; renderDirectTail(); });
 }
 
 function renderLogExplorer() {
@@ -910,21 +1041,63 @@ function renderLogExplorer() {
   const dated = records.map(record => Date.parse(record.timestamp || '')).filter(Number.isFinite);
   const availableWindow = dated.length > 1 ? `${Math.max(0, Math.round((Math.max(...dated) - Math.min(...dated)) / 60000))} minute sampled window` : 'recent sampled log window';
   const sourceNote = data.mode === 'splunk' ? 'Splunk returns the configured lookback window.' : `This source currently provides a ${availableWindow}; longer selections only filter records available in this sample.`;
-  const errorGroups = groupedErrorSignatures(record => !rangeMs || (record.timestamp && Date.parse(record.timestamp) >= cutoff));
-  target.innerHTML = `<section class="log-summary"><article><span>Errors</span><strong>${errorCount}</strong><small>Latest: ${escapeHtml(latestError)}</small></article><article><span>Warnings</span><strong>${warningCount}</strong><small>Current sampled window</small></article><article><span>Recurring patterns</span><strong>${patterns.length}</strong><small>Repeated error signatures</small></article><article><span>Available data</span><strong>${records.length}</strong><small>${escapeHtml(sourceNote)}</small></article></section><div class="log-control-bar"><label>Pod<select id="log-explorer-pod">${data.pods.map(pod => `<option value="${escapeHtml(pod.name)}" ${pod.name === logExplorerPodName ? 'selected' : ''}>${escapeHtml(pod.name)} · ${escapeHtml(pod.status)}</option>`).join('')}</select></label><label>Time range<select id="log-explorer-range"><option value="all" ${logExplorerRange === 'all' ? 'selected' : ''}>Available sample</option><option value="5m" ${logExplorerRange === '5m' ? 'selected' : ''}>Last 5 minutes</option><option value="15m" ${logExplorerRange === '15m' ? 'selected' : ''}>Last 15 minutes</option><option value="1h" ${logExplorerRange === '1h' ? 'selected' : ''}>Last hour</option><option value="6h" ${logExplorerRange === '6h' ? 'selected' : ''}>Last 6 hours</option></select></label><label>Severity<select id="log-explorer-level"><option value="all" ${logExplorerLevel === 'all' ? 'selected' : ''}>All events</option><option value="critical" ${logExplorerLevel === 'critical' ? 'selected' : ''}>Critical</option><option value="error" ${logExplorerLevel === 'error' ? 'selected' : ''}>Errors</option><option value="warn" ${logExplorerLevel === 'warn' ? 'selected' : ''}>Warnings</option><option value="info" ${logExplorerLevel === 'info' ? 'selected' : ''}>Information</option></select></label><label class="log-search">Search<input id="log-explorer-search" value="${escapeHtml(logExplorerSearch)}" placeholder="Error text, request ID, message…"></label><button data-log-apply-search>Search</button><button class="live-tail ${logExplorerLiveTail ? 'active' : ''}" data-log-live-tail>${logExplorerLiveTail ? '● Live tail on' : '○ Live tail paused'}</button></div><details class="advanced-log-filters"><summary>Advanced filter</summary><label>Structured field value<input id="log-explorer-field-search" value="${escapeHtml(logExplorerFieldSearch)}" placeholder="e.g. request_id, 500, timeout"></label><button type="button" data-log-apply-field>Apply filter</button></details><div class="log-action-bar"><label>Saved query<select id="log-saved-query"><option value="">Choose a saved query</option>${queryOptions.map((query, index) => `<option value="${index}">${escapeHtml(query.name)}</option>`).join('')}</select></label><button data-log-save-query>Save current query</button><label>Context<select id="log-context-before"><option value="5" ${logExplorerBefore === 5 ? 'selected' : ''}>5 before</option><option value="20" ${logExplorerBefore === 20 ? 'selected' : ''}>20 before</option><option value="100" ${logExplorerBefore === 100 ? 'selected' : ''}>100 before</option></select></label><label>Following<select id="log-context-after"><option value="0" ${logExplorerAfter === 0 ? 'selected' : ''}>None</option><option value="5" ${logExplorerAfter === 5 ? 'selected' : ''}>5 after</option><option value="20" ${logExplorerAfter === 20 ? 'selected' : ''}>20 after</option></select></label><span>${recent.length}/${records.length} records shown</span><button data-log-export="json">Export JSON</button><button data-log-export="csv">Export CSV</button></div><div class="log-explorer-grid"><div class="log-event-list"><div class="log-list-heading"><strong>${escapeHtml(logExplorerPodName)}</strong><small>${records.length} recent records</small></div>${recent.length ? recent.map(record => `<button class="log-event ${record.index === logExplorerSelectedIndex ? 'active' : ''}" data-log-explorer-index="${record.index}"><span class="${severityClass(severity(record))}">${escapeHtml(record.level)}</span><strong>${escapeHtml(record.timestamp || `Entry ${record.index + 1}`)}</strong><small>${escapeHtml(record.message)}</small></button>`).join('') : '<p class="empty">No matching logs for this filter.</p>'}</div><div class="log-json-view">${selected ? `<div class="log-list-heading"><strong>${logExplorerJsonOpen ? 'JSON context' : 'Selected log event'}</strong><small>${logExplorerJsonOpen ? `${Math.max(0, context.length - 1)} nearby events included` : 'Open as JSON for full details'}</small></div>${logExplorerJsonOpen ? `<pre class="large-log">${escapeHtml(JSON.stringify(context, null, 2))}</pre><button class="log-json-action" data-log-json-close>Show selected event</button>` : `<div class="log-preview"><span class="${severityClass(severity(selected))}">${escapeHtml(selected.level)}</span><p>${escapeHtml(selected.message)}</p><button class="log-json-action" data-log-json-open>Open JSON context</button></div>`}` : '<p class="empty">Choose a log event to inspect it.</p>'}</div></div><section class="pattern-panel"><div><p class="eyebrow">RECURRING ERROR PATTERNS</p><h3>Potential incident signals</h3></div>${patterns.length ? patterns.map(item => `<article><strong>${item.count} occurrences</strong><p>${escapeHtml(item.pattern)}</p><button data-pattern-filter="${escapeHtml(item.pattern)}">Filter</button><button data-pattern-alert="${escapeHtml(item.pattern)}">Create alert</button></article>`).join('') : '<p class="empty">No repeated error or critical pattern in the current sample.</p>'}</section>`;
+  const errorGroups = groupedErrorSignatures((record, pod) => (!rangeMs || (record.timestamp && Date.parse(record.timestamp) >= cutoff)) && (errorSignatureScope === 'all' || pod === errorSignatureScope));
+  const matchesLogFilters = record => (!rangeMs || (record.timestamp && Date.parse(record.timestamp) >= cutoff)) && (logExplorerLevel === 'all' || record.level === logExplorerLevel) && (!search || `${record.level} ${record.message} ${record.raw}`.toLocaleLowerCase().includes(search)) && (!fieldSearch || JSON.stringify(record.fields || {}).toLocaleLowerCase().includes(fieldSearch));
+  const streamRecords = Object.entries(data.structured_logs || {}).flatMap(([pod, podRecords]) => podRecords.filter(matchesLogFilters).map(record => ({ pod, record }))).sort((left, right) => Date.parse(right.record.timestamp || 0) - Date.parse(left.record.timestamp || 0)).slice(0, 100);
+  target.innerHTML = `<section class="log-summary"><article><span>Errors</span><strong>${errorCount}</strong><small>Latest: ${escapeHtml(latestError)}</small></article><article><span>Warnings</span><strong>${warningCount}</strong><small>Current sampled window</small></article><article><span>Recurring patterns</span><strong>${patterns.length}</strong><small>Repeated error signatures</small></article><article><span>Available data</span><strong>${records.length}</strong><small>${escapeHtml(sourceNote)}</small></article></section><div class="log-control-bar"><label>Pod<select id="log-explorer-pod">${data.pods.map(pod => `<option value="${escapeHtml(pod.name)}" ${pod.name === logExplorerPodName ? 'selected' : ''}>${escapeHtml(pod.name)} · ${escapeHtml(pod.status)}</option>`).join('')}</select></label><label>Time range<select id="log-explorer-range"><option value="all" ${logExplorerRange === 'all' ? 'selected' : ''}>Available sample</option><option value="5m" ${logExplorerRange === '5m' ? 'selected' : ''}>Last 5 minutes</option><option value="15m" ${logExplorerRange === '15m' ? 'selected' : ''}>Last 15 minutes</option><option value="1h" ${logExplorerRange === '1h' ? 'selected' : ''}>Last hour</option><option value="6h" ${logExplorerRange === '6h' ? 'selected' : ''}>Last 6 hours</option></select></label><label>Severity<select id="log-explorer-level"><option value="all" ${logExplorerLevel === 'all' ? 'selected' : ''}>All events</option><option value="critical" ${logExplorerLevel === 'critical' ? 'selected' : ''}>Critical</option><option value="error" ${logExplorerLevel === 'error' ? 'selected' : ''}>Errors</option><option value="warn" ${logExplorerLevel === 'warn' ? 'selected' : ''}>Warnings</option><option value="info" ${logExplorerLevel === 'info' ? 'selected' : ''}>Information</option></select></label><label class="log-search">Search<input id="log-explorer-search" value="${escapeHtml(logExplorerSearch)}" placeholder="Error text, request ID, message…"></label><button data-log-apply-search>Search</button><button class="live-tail ${logExplorerLiveTail ? 'active' : ''}" data-log-live-tail>${logExplorerLiveTail ? '● Live tail on' : '○ Live tail paused'}</button></div><details class="advanced-log-filters"><summary>Advanced filter</summary><label>Structured field value<input id="log-explorer-field-search" value="${escapeHtml(logExplorerFieldSearch)}" placeholder="e.g. request_id, 500, timeout"></label><button type="button" data-log-apply-field>Apply filter</button></details><div class="log-action-bar"><label>Saved query<select id="log-saved-query"><option value="">Choose a saved query</option>${queryOptions.map((query, index) => `<option value="${index}">${escapeHtml(query.name)}</option>`).join('')}</select></label><button data-log-save-query>Save current query</button><label>Context<select id="log-context-before"><option value="5" ${logExplorerBefore === 5 ? 'selected' : ''}>5 before</option><option value="20" ${logExplorerBefore === 20 ? 'selected' : ''}>20 before</option><option value="100" ${logExplorerBefore === 100 ? 'selected' : ''}>100 before</option></select></label><label>Following<select id="log-context-after"><option value="0" ${logExplorerAfter === 0 ? 'selected' : ''}>None</option><option value="5" ${logExplorerAfter === 5 ? 'selected' : ''}>5 after</option><option value="20" ${logExplorerAfter === 20 ? 'selected' : ''}>20 after</option></select></label><span>${recent.length}/${records.length} records shown</span><button data-log-export="json">Export JSON</button><button data-log-export="csv">Export CSV</button></div><section class="live-log-stream"><header><div><p class="eyebrow">LIVE LOG STREAM</p><h3>Latest events across monitored pods</h3><small>Updates with the dashboard refresh. Click an event to inspect that pod’s structured context.</small></div><div class="stream-controls"><button type="button" class="${logExplorerStreamScope === 'all' ? 'active' : ''}" data-log-stream-scope="all">All pods</button><button type="button" class="${logExplorerStreamScope === 'selected' ? 'active' : ''}" data-log-stream-scope="selected">Selected pod</button></div></header><div class="live-stream-list">${(logExplorerStreamScope === 'all' ? streamRecords : streamRecords.filter(item => item.pod === logExplorerPodName)).length ? (logExplorerStreamScope === 'all' ? streamRecords : streamRecords.filter(item => item.pod === logExplorerPodName)).map(({ pod, record }) => `<button type="button" class="live-stream-event" data-live-stream-pod="${escapeHtml(pod)}" data-live-stream-index="${record.index}"><span class="${severityClass(severity(record))}">${escapeHtml(record.level)}</span><b>${escapeHtml(pod)}</b><time>${escapeHtml(record.timestamp || `Entry ${record.index + 1}`)}</time><p>${escapeHtml(record.message)}</p></button>`).join('') : '<p class="empty">No matching events in the available live sample.</p>'}</div></section><div class="log-explorer-grid"><div class="log-event-list"><div class="log-list-heading"><strong>${escapeHtml(logExplorerPodName)}</strong><small>${records.length} recent records</small></div>${recent.length ? recent.map(record => `<button class="log-event ${record.index === logExplorerSelectedIndex ? 'active' : ''}" data-log-explorer-index="${record.index}"><span class="${severityClass(severity(record))}">${escapeHtml(record.level)}</span><strong>${escapeHtml(record.timestamp || `Entry ${record.index + 1}`)}</strong><small>${escapeHtml(record.message)}</small></button>`).join('') : '<p class="empty">No matching logs for this filter.</p>'}</div><div class="log-json-view">${selected ? `<div class="log-list-heading"><strong>${logExplorerJsonOpen ? 'JSON context' : 'Selected log event'}</strong><small>${logExplorerJsonOpen ? `${Math.max(0, context.length - 1)} nearby events included` : 'Open as JSON for full details'}</small></div>${logExplorerJsonOpen ? `<pre class="large-log">${escapeHtml(JSON.stringify(context, null, 2))}</pre><button class="log-json-action" data-log-json-close>Show selected event</button>` : `<div class="log-preview"><span class="${severityClass(severity(selected))}">${escapeHtml(selected.level)}</span><p>${escapeHtml(selected.message)}</p><button class="log-json-action" data-log-json-open>Open JSON context</button></div>`}` : '<p class="empty">Choose a log event to inspect it.</p>'}</div></div><section class="pattern-panel"><div><p class="eyebrow">RECURRING ERROR PATTERNS</p><h3>Potential incident signals</h3></div>${patterns.length ? patterns.map(item => `<article><strong>${item.count} occurrences</strong><p>${escapeHtml(item.pattern)}</p><button data-pattern-filter="${escapeHtml(item.pattern)}">Filter</button><button data-pattern-alert="${escapeHtml(item.pattern)}">Create alert</button></article>`).join('') : '<p class="empty">No repeated error or critical pattern in the current sample.</p>'}</section>`;
   const rangeSelector = target.querySelector('#log-explorer-range');
+  const beforeSelector = target.querySelector('#log-context-before');
+  const afterSelector = target.querySelector('#log-context-after');
+  const savedQuerySelector = target.querySelector('#log-saved-query');
+  const saveQueryButton = target.querySelector('[data-log-save-query]');
+  if (beforeSelector?.parentElement?.firstChild) beforeSelector.parentElement.firstChild.textContent = 'Logs before selected event';
+  if (afterSelector?.parentElement?.firstChild) afterSelector.parentElement.firstChild.textContent = 'Logs after selected event';
+  if (savedQuerySelector?.parentElement?.firstChild) savedQuerySelector.parentElement.firstChild.textContent = 'Saved searches';
+  if (saveQueryButton) {
+    saveQueryButton.textContent = '+ Save this search';
+    saveQueryButton.classList.add('save-log-query');
+    saveQueryButton.title = 'Save the current pod, time range, severity, and search terms';
+  }
+  target.querySelector('.log-action-bar')?.insertAdjacentHTML('beforeend', '<small class="json-context-note">Applies only when you open JSON context.</small>');
+  target.querySelector('.log-explorer-grid')?.insertAdjacentHTML('afterend', `${directTailHtml()}${podLogEvidenceHtml()}`);
+  bindDirectTailControls();
+  const streamEmpty = target.querySelector('.live-stream-list .empty');
+  if (streamEmpty) {
+    streamEmpty.classList.add('live-stream-empty');
+    streamEmpty.textContent = 'No recent log events match the current stream selection or filters.';
+  }
   [['12h', 'Last 12 hours'], ['24h', 'Last 24 hours']].forEach(([value, label]) => {
     const option = document.createElement('option'); option.value = value; option.textContent = label; option.selected = logExplorerRange === value; rangeSelector.append(option);
   });
   if (selectedExplanation) target.querySelector('.log-json-view')?.insertAdjacentHTML('afterbegin', `${selectedExplanation}${selectedTrace}`);
-  target.querySelector('.pattern-panel')?.insertAdjacentHTML('beforebegin', `<section class="error-signature-panel"><header><div><p class="eyebrow">GROUPED ERROR SIGNATURES</p><h3>Repeated failures across available pods</h3></div><small>${errorGroups.length} normalized group${errorGroups.length === 1 ? '' : 's'} · current available samples</small></header>${errorGroups.length ? `<div>${errorGroups.map((group, index) => `<article><span class="signature-rank">${index + 1}</span><div><b>${escapeHtml(group.signature)}</b><p>${group.count} occurrence${group.count === 1 ? '' : 's'} across ${group.pods.size} pod${group.pods.size === 1 ? '' : 's'} · ${escapeHtml([...group.levels].join(', '))}</p><small>${escapeHtml([...group.pods].slice(0, 5).join(', '))}${group.pods.size > 5 ? ` +${group.pods.size - 5} more` : ''}</small></div><div><small>${escapeHtml(group.first || 'Time unavailable')} → ${escapeHtml(group.last || 'Time unavailable')}</small><button type="button" data-error-group-pod="${escapeHtml(group.examplePod)}" data-error-group-index="${group.example.index}">Open example</button></div></article>`).join('')}</div>` : '<p class="empty">No warning, error, or critical signatures in the available samples.</p>'}</section>`);
+  target.querySelector('.pattern-panel')?.insertAdjacentHTML('beforebegin', `<section class="error-signature-panel"><header><div><p class="eyebrow">GROUPED ERROR SIGNATURES</p><h3>Repeated failures across available pods</h3></div><small>${errorGroups.length} normalized group${errorGroups.length === 1 ? '' : 's'} · current available samples</small></header>${errorGroups.length ? `<div>${errorGroups.map((group, index) => `<article><span class="signature-rank">${index + 1}</span><div><b>${escapeHtml(group.signature)}</b><p>${group.count} occurrence${group.count === 1 ? '' : 's'} across ${group.pods.size} pod${group.pods.size === 1 ? '' : 's'} · ${escapeHtml([...group.levels].join(', '))}</p><small>${escapeHtml([...group.pods].slice(0, 5).join(', '))}${group.pods.size > 5 ? ` +${group.pods.size - 5} more` : ''}</small></div><div><small>${escapeHtml(group.first || 'Time unavailable')} → ${escapeHtml(group.last || 'Time unavailable')}</small><button type="button" data-error-group-pod="${escapeHtml(group.examplePod)}" data-error-group-index="${group.example.index}">View matching log</button></div></article>`).join('')}</div>` : '<p class="empty">No warning, error, or critical signatures in the available samples.</p>'}</section>`);
+  const signaturePanel = target.querySelector('.error-signature-panel');
+  const signatureEmpty = signaturePanel?.querySelector(':scope > .empty');
+  if (signatureEmpty) {
+    signatureEmpty.classList.add('signature-empty');
+    signatureEmpty.textContent = errorSignatureScope === 'all' ? 'No repeated warning, error, or critical patterns were found across the monitored pods.' : `No warning, error, or critical patterns were found for ${errorSignatureScope}.`;
+  }
+  signaturePanel?.querySelector('header > div')?.insertAdjacentHTML('afterend', `<label class="signature-scope-picker">Show signatures for<select id="error-signature-scope"><option value="all" ${errorSignatureScope === 'all' ? 'selected' : ''}>All monitored pods</option>${data.pods.map(pod => `<option value="${escapeHtml(pod.name)}" ${errorSignatureScope === pod.name ? 'selected' : ''}>${escapeHtml(pod.name)}</option>`).join('')}</select></label>`);
+  signaturePanel?.querySelector('h3')?.replaceChildren(document.createTextNode(errorSignatureScope === 'all' ? 'Repeated failures across all monitored pods' : `Repeated failures in ${errorSignatureScope}`));
+  target.querySelector('.error-signature-panel header > small')?.replaceWith(Object.assign(document.createElement('small'), { textContent: errorGroups.length ? 'Grouped by similar log messages in the current sample' : 'No repeated issues found' }));
   target.querySelectorAll('.error-signature-panel article').forEach((article, index) => {
-    if (!isDeveloperOrAdministrator() || !errorGroups[index]) return;
-    const button = document.createElement('button');
-    button.type = 'button'; button.textContent = 'Developer workspace'; button.dataset.errorGroupWorkspace = errorGroups[index].examplePod;
-    article.lastElementChild?.append(button);
+    const group = errorGroups[index];
+    if (!group) return;
+    const description = describeErrorSignature(group.signature, group.levels);
+    const detail = article.querySelector(':scope > div');
+    const technical = detail?.querySelector('b');
+    const facts = detail?.querySelector('p');
+    technical?.classList.add('signature-technical');
+    technical?.insertAdjacentHTML('beforebegin', `<strong class="signature-title">${escapeHtml(description.title)}</strong><span class="signature-impact">${escapeHtml(description.impact)}</span><span class="signature-status">${escapeHtml(description.severity)}</span>`);
+    if (facts) facts.textContent = `Seen ${group.count} time${group.count === 1 ? '' : 's'} across ${group.pods.size} pod${group.pods.size === 1 ? '' : 's'} · ${[...group.levels].join(', ')}`;
+    if (isDeveloperOrAdministrator()) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = 'Open investigation'; button.dataset.errorGroupWorkspace = group.examplePod;
+      article.lastElementChild?.append(button);
+    }
   });
   target.querySelectorAll('[data-error-group-workspace]').forEach(button => button.addEventListener('click', () => openDeveloperInvestigation(button.dataset.errorGroupWorkspace)));
+  target.querySelector('#error-signature-scope')?.addEventListener('change', event => { errorSignatureScope = event.target.value; if (errorSignatureScope !== 'all') logExplorerPodName = errorSignatureScope; renderLogExplorer(); });
   target.querySelectorAll('[data-error-group-pod]').forEach(button => button.addEventListener('click', () => {
     logExplorerPodName = button.dataset.errorGroupPod;
     logExplorerSelectedIndex = Number(button.dataset.errorGroupIndex);
@@ -936,6 +1109,7 @@ function renderLogExplorer() {
     logExplorerSelectedIndex = undefined;
     logExplorerJsonOpen = false;
     renderLogExplorer();
+    startDirectTail();
   });
   document.querySelector('#log-explorer-level').addEventListener('change', event => {
     logExplorerLevel = event.target.value;
@@ -950,6 +1124,19 @@ function renderLogExplorer() {
   document.querySelector('#log-context-before').addEventListener('change', event => { logExplorerBefore = Number(event.target.value); renderLogExplorer(); });
   document.querySelector('#log-context-after').addEventListener('change', event => { logExplorerAfter = Number(event.target.value); renderLogExplorer(); });
   document.querySelector('[data-log-live-tail]').addEventListener('click', () => { logExplorerLiveTail = !logExplorerLiveTail; renderLogExplorer(); });
+  target.querySelector('.stream-controls')?.insertAdjacentHTML('afterbegin', `<label class="stream-pod-picker">Live logs from<select id="live-stream-pod"><option value="all" ${logExplorerStreamScope === 'all' ? 'selected' : ''}>All monitored pods</option>${data.pods.map(pod => `<option value="${escapeHtml(pod.name)}" ${logExplorerStreamScope === 'selected' && pod.name === logExplorerPodName ? 'selected' : ''}>${escapeHtml(pod.name)}</option>`).join('')}</select></label>`);
+  target.querySelectorAll('[data-log-stream-scope]').forEach(button => button.addEventListener('click', () => { logExplorerStreamScope = button.dataset.logStreamScope; renderLogExplorer(); }));
+  target.querySelector('#live-stream-pod')?.addEventListener('change', event => {
+    logExplorerStreamScope = event.target.value === 'all' ? 'all' : 'selected';
+    if (logExplorerStreamScope === 'selected') logExplorerPodName = event.target.value;
+    renderLogExplorer();
+  });
+  target.querySelectorAll('[data-live-stream-pod]').forEach(button => button.addEventListener('click', () => {
+    logExplorerPodName = button.dataset.liveStreamPod;
+    logExplorerSelectedIndex = Number(button.dataset.liveStreamIndex);
+    logExplorerJsonOpen = true;
+    renderLogExplorer();
+  }));
   document.querySelector('#log-saved-query').addEventListener('change', event => {
     const query = savedLogQueries()[Number(event.target.value)];
     if (!query) return;
@@ -1071,13 +1258,44 @@ function renderAlerts(alerts) {
   const target = document.querySelector('#alerts');
   const action = document.querySelector('[data-alert-act]');
   if (action) { action.disabled = !alerts.length; action.textContent = alerts.length ? 'Investigate top alert' : 'No action needed'; }
-  const delivery = '<p class="muted">Notification delivery is not connected. Alerts are evaluated and retained locally; connect an approved Teams or email destination before relying on external notifications.</p>';
+  const settings = notificationSettings;
+  const delivery = isAdministrator() ? `<section class="notification-delivery ${settings?.enabled && settings?.webhook_configured ? 'ready' : 'not-ready'}"><div><span>${settings?.enabled && settings?.webhook_configured ? 'Teams delivery active' : 'Teams delivery not active'}</span><strong>Microsoft Teams alert delivery</strong><small>${settings?.webhook_configured ? (settings.enabled ? `New alert breaches are delivered once. ${settings.last_delivery ? `Last delivery ${new Date(settings.last_delivery).toLocaleString()}.` : 'No alert has been sent yet.'}` : 'The approved Teams webhook is available. Enable delivery when you are ready.') : 'Add TEAMS_WEBHOOK_URL and NOTIFICATION_ALLOWED_HOSTS through the deployment Secret; the URL is never shown here.'}${settings?.last_error ? ` Latest delivery issue: ${escapeHtml(settings.last_error)}` : ''}</small></div><div><label class="notification-toggle"><input type="checkbox" data-notification-enabled ${settings?.enabled ? 'checked' : ''} ${settings?.webhook_configured ? '' : 'disabled'}> Enable Teams</label><button type="button" data-notification-test ${settings?.webhook_configured ? '' : 'disabled'}>Send test</button></div></section>` : '<p class="muted">Alerts are evaluated and retained locally. An administrator can configure approved Microsoft Teams delivery.</p>';
   const groups = new Map();
   alerts.sort((a, b) => severityRank[b.severity] - severityRank[a.severity]).forEach(alert => { const list = groups.get(alert.pod) || []; list.push(alert); groups.set(alert.pod, list); });
   target.innerHTML = `${groups.size ? [...groups.entries()].map(([pod, podAlerts]) => `<section class="alert-group"><div class="alert-group-heading"><div><strong>${escapeHtml(pod)}</strong><small>${podAlerts.length} active signal${podAlerts.length === 1 ? '' : 's'}</small></div><button type="button" data-alert-investigate-pod="${escapeHtml(pod)}">Open evidence path</button></div>${podAlerts.map(alert => { const key = alertKey(alert); const record = acknowledgedAlerts[key]; const state = record?.status || 'active'; const lifecycle = record ? `<small>${escapeHtml(state)} by ${escapeHtml(record.acknowledged_by)} · ${new Date(record.acknowledged_at).toLocaleString()}${record.note ? ` · ${escapeHtml(record.note)}` : ''}</small>` : '<small>Active and not yet acknowledged</small>'; const controls = isDeveloperOrAdministrator() ? `<div class="alert-actions"><button type="button" data-alert-investigate="${escapeHtml(key)}">Open logs</button>${state === 'investigating' ? '<span class="alert-acknowledged">Investigating</span>' : `<button type="button" data-alert-lifecycle="${escapeHtml(key)}" data-alert-status="investigating">Investigate</button>`}${state === 'acknowledged' ? '<span class="alert-acknowledged">Acknowledged</span>' : `<button type="button" data-alert-lifecycle="${escapeHtml(key)}" data-alert-status="acknowledged">Acknowledge</button>`}</div>` : '<span class="alert-acknowledged">View only</span>'; return `<div class="alert ${alert.severity} ${record ? 'acknowledged' : ''}"><span class="${severityClass(alert.severity)}">${escapeHtml(alert.severity)}</span><div><p>${escapeHtml(alert.message)}</p>${lifecycle}</div>${controls}</div>`; }).join('')}</section>`).join('') : '<p class="empty">No active alerts.</p>'}${delivery}`;
   target.querySelectorAll('[data-alert-investigate-pod]').forEach(button => button.addEventListener('click', () => openAlertEvidencePath({ pod: button.dataset.alertInvestigatePod, severity: 'warning' })));
   target.querySelectorAll('[data-alert-investigate]').forEach(button => button.addEventListener('click', () => { const alert = alerts.find(item => alertKey(item) === button.dataset.alertInvestigate); if (alert) investigateAlert(alert); }));
   target.querySelectorAll('[data-alert-lifecycle]').forEach(button => button.addEventListener('click', () => updateAlertLifecycle(button.dataset.alertLifecycle, button.dataset.alertStatus, button)));
+  target.querySelector('[data-notification-enabled]')?.addEventListener('change', async event => {
+    event.target.disabled = true;
+    try {
+      const response = await fetch('/api/notification-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || 'Unable to update notification delivery.');
+      notificationSettings = payload.settings;
+      renderAlerts(data.alerts || []);
+    } catch (error) { window.alert(error.message); event.target.disabled = false; }
+  });
+  target.querySelector('[data-notification-test]')?.addEventListener('click', async event => {
+    event.target.disabled = true; event.target.textContent = 'Sending…';
+    try {
+      const response = await fetch('/api/notification-settings/test', { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || 'Unable to send test notification.');
+      notificationSettings = payload.settings;
+      renderAlerts(data.alerts || []);
+      window.alert(payload.message);
+    } catch (error) { window.alert(error.message); event.target.disabled = false; event.target.textContent = 'Send test'; }
+  });
+}
+
+async function loadNotificationSettings() {
+  if (!isAdministrator()) return;
+  try {
+    const response = await fetch('/api/notification-settings');
+    const payload = await response.json();
+    if (response.ok) notificationSettings = payload.settings;
+  } catch { /* The alert workspace continues without delivery configuration. */ }
 }
 
 function renderAlertHistory(events) {
@@ -1380,7 +1598,7 @@ function selectPod(name, resetTab = true) {
 
 async function load(preservePausedLogs = false) {
   try {
-    const [response, historyResponse, alertHistoryResponse, readinessResponse] = await Promise.all([fetch('/api/overview'), fetch(`/api/observability/history?minutes=${observabilityMinutes}`), fetch('/api/alert-history'), fetch('/ready')]);
+    const [response, historyResponse, alertHistoryResponse, readinessResponse] = await Promise.all([fetch('/api/overview'), fetch(`/api/observability/history?minutes=${observabilityMinutes}`), fetch('/api/alert-history'), fetch('/ready'), loadNotificationSettings()]);
     const payload = await response.json();
     const historyPayload = historyResponse.ok ? await historyResponse.json() : observabilityData;
     const alertHistoryPayload = alertHistoryResponse.ok ? await alertHistoryResponse.json() : { events: [] };
@@ -1510,7 +1728,7 @@ document.querySelector('[data-alert-act]').addEventListener('click', () => {
 document.body.dataset.audience = 'operator';
 
 function pageFromTarget(targetId) {
-  const page = targetId === 'observability-center' ? 'operations' : targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access-center' ? 'access' : targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alert-center' ? 'alerts' : 'overview';
+  const page = targetId === 'operations' || targetId === 'observability-center' ? 'operations' : targetId === 'workloads' || targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'pod-logs' || targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access' || targetId === 'access-center' ? 'access' : targetId === 'intelligence' || targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alerts' || targetId === 'alert-center' ? 'alerts' : 'overview';
   if ((page === 'access' || page === 'data-sources') && !isAdministrator()) return 'overview';
   if ((page === 'logs' || page === 'operations') && !isDeveloperOrAdministrator()) return 'overview';
   return page;
@@ -1531,11 +1749,12 @@ function syncWorkspacePage() { setWorkspacePage(pageFromTarget((window.location.
 document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab => tab.addEventListener('click', event => {
   event.preventDefault();
   const hash = tab.getAttribute('href') || '#overview';
-  window.history.replaceState(null, '', hash);
+  window.history.pushState(null, '', hash);
   setWorkspacePage(pageFromTarget(hash.slice(1)));
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }));
 window.addEventListener('hashchange', syncWorkspacePage);
+window.addEventListener('popstate', syncWorkspacePage);
 syncWorkspacePage();
 Promise.all([loadSplunkSettings(), loadPrometheusSettings()]).then(renderDataSources);
 loadUrlMonitors();

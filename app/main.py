@@ -11,15 +11,16 @@ import socket
 from uuid import uuid4
 import time
 import httpx
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth
 
-from app.observability import AlertEngine, ClusterClient, ClusterConnectionError, TelemetryCollector, answer_operations_question, structure_logs
+from app.observability import AlertEngine, AlertNotifier, ClusterClient, ClusterConnectionError, TelemetryCollector, answer_operations_question, structure_logs
 from app.auth import AccountLockedError, LocalAuth
 
 
@@ -27,7 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data"))
 client = ClusterClient()
 alerts = AlertEngine()
-collector = TelemetryCollector(client, alerts)
+notifier = AlertNotifier()
+collector = TelemetryCollector(client, alerts, notifier)
 auth = LocalAuth(DATA_DIR)
 
 
@@ -122,6 +124,10 @@ class AlertAcknowledgementUpdate(BaseModel):
     key: str = Field(min_length=3, max_length=600)
     status: str = Field(default="acknowledged", pattern="^(acknowledged|investigating)$")
     note: str = Field(default="", max_length=500)
+
+
+class NotificationSettingsUpdate(BaseModel):
+    enabled: bool = False
 
 
 class AlertRuleCreate(BaseModel):
@@ -1005,6 +1011,39 @@ def pod_logs(
     }
 
 
+@app.get("/api/pods/{pod_name}/tail")
+def pod_log_tail(pod_name: str, request: Request):
+    """Follow one selected pod's masked logs as a read-only SSE stream."""
+    require_developer_or_administrator(request)
+    try:
+        snapshot = collector.snapshot()
+    except ClusterConnectionError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    pod = next((item for item in snapshot.get("pods", []) if item.get("name") == pod_name), None)
+    if not pod:
+        raise HTTPException(status_code=404, detail="Pod not found.")
+
+    from app.observability import Pod
+    live_pod = Pod(**{key: pod[key] for key in ("name", "namespace", "status", "restarts", "cpu_millicores", "cpu_limit_millicores", "memory_mib", "memory_limit_mib", "node", "container_id", "image", "created_at", "ports", "reason") if key in pod})
+
+    def send(event: str, payload: dict[str, Any]) -> str:
+        return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    def events():
+        yield send("status", {"state": "connected", "pod": pod_name})
+        try:
+            for raw in client.stream_logs(live_pod):
+                record = structure_logs([raw])[0]
+                yield send("log", {"pod": pod_name, "record": record})
+        except ClusterConnectionError as error:
+            yield send("tail-error", {"message": str(error)})
+        except Exception:
+            yield send("tail-error", {"message": "The live log stream ended unexpectedly. Retry the connection."})
+        yield send("complete", {"pod": pod_name})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.get("/api/alert-rules")
 def alert_rules() -> dict:
     return {"rules": alerts.rules()}
@@ -1062,6 +1101,32 @@ def delete_alert_rule(rule_id: str, request: Request) -> dict:
 @app.get("/api/alert-history")
 def alert_history() -> dict:
     return {"events": alerts.history()}
+
+
+@app.get("/api/notification-settings")
+def notification_settings(request: Request) -> dict:
+    require_administrator(request)
+    return {"settings": notifier.settings()}
+
+
+@app.put("/api/notification-settings")
+def update_notification_settings(update: NotificationSettingsUpdate, request: Request) -> dict:
+    actor = require_administrator(request)
+    settings = notifier.update(update.enabled)
+    _audit("notification_settings.updated", actor, "teams", {"enabled": settings["enabled"], "webhook_configured": settings["webhook_configured"]})
+    return {"settings": settings}
+
+
+@app.post("/api/notification-settings/test")
+def test_notification_settings(request: Request) -> dict:
+    actor = require_administrator(request)
+    try:
+        settings = notifier.test()
+    except (ValueError, requests.RequestException) as error:
+        # The client receives a configuration error, never the secret URL.
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    _audit("notification_settings.tested", actor, "teams")
+    return {"settings": settings, "message": "Test notification sent to Microsoft Teams."}
 
 
 @app.put("/api/alert-acknowledgements")

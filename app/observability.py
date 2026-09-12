@@ -275,6 +275,86 @@ class ClusterClient:
             except Exception:
                 raise ClusterConnectionError("Unable to read live pod logs. Grant read-only pods/log access to the monitoring identity, or configure the optional Splunk log fallback.") from error
 
+    def pod_events(self, pods: list[Pod]) -> list[dict[str, Any]]:
+        """Return recent native Kubernetes events for the currently monitored pods.
+
+        Events are deliberately read-only and optional: Docker and Splunk do not
+        provide an equivalent Kubernetes event stream, and missing event
+        permission must never prevent normal pod monitoring.
+        """
+        if self.target == "docker" or self.active_source == "splunk" or self.target == "splunk":
+            return []
+        try:
+            from kubernetes import client
+
+            self._configure()
+            names = {pod.name for pod in pods}
+            items = client.CoreV1Api().list_namespaced_event(self.namespace).items
+            results = []
+            for item in items:
+                involved = getattr(item, "involved_object", None)
+                if not involved or getattr(involved, "kind", "") != "Pod" or getattr(involved, "name", "") not in names:
+                    continue
+                reason = str(getattr(item, "reason", "Kubernetes event") or "Kubernetes event")
+                message = str(getattr(item, "message", "") or reason)
+                kind = "warning" if str(getattr(item, "type", "Normal")).casefold() == "warning" else "normal"
+                lowered = f"{reason} {message}".casefold()
+                severity = "critical" if any(token in lowered for token in ("failed", "backoff", "oom", "evict", "unhealthy")) else "warning" if kind == "warning" else "healthy"
+                moment = getattr(item, "event_time", None) or getattr(item, "last_timestamp", None) or getattr(item, "first_timestamp", None) or getattr(getattr(item, "metadata", None), "creation_timestamp", None)
+                results.append({"pod": involved.name, "source": "kubernetes", "kind": "kubernetes-event", "severity": severity, "reason": reason, "message": message, "timestamp": moment.isoformat() if moment else None, "count": int(getattr(item, "count", 1) or 1)})
+            return sorted(results, key=lambda event: event.get("timestamp") or "", reverse=True)[:100]
+        except Exception:
+            return []
+
+    def stream_logs(self, pod: Pod):
+        """Yield new log lines from one read-only workload log stream.
+
+        Unlike the dashboard sample, this follows a single selected workload.
+        Splunk is intentionally excluded because its search API is not a safe
+        equivalent of a continuously-followed pod log stream.
+        """
+        if self.target == "splunk" or self.active_source == "splunk":
+            raise ClusterConnectionError("Direct Live Tail is unavailable for Splunk external source. Use the sampled log search instead.")
+        if self.target == "docker":
+            try:
+                import docker
+
+                container = docker.from_env().containers.get(pod.name)
+                # Include an immediate recent window, then follow every new line.
+                # This makes a quiet workload useful to investigate without waiting
+                # for the next request or error.
+                for raw in container.logs(stream=True, follow=True, tail=self.log_tail_lines, timestamps=True):
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if line:
+                        yield line
+                return
+            except Exception as error:
+                raise ClusterConnectionError("Unable to open the local container log stream.") from error
+        try:
+            from kubernetes import client
+
+            self._configure()
+            core = client.CoreV1Api()
+            response = core.read_namespaced_pod_log(
+                name=pod.name,
+                namespace=pod.namespace,
+                follow=True,
+                tail_lines=self.log_tail_lines,
+                timestamps=True,
+                _preload_content=False,
+            )
+            try:
+                for raw in response.stream():
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if line:
+                        yield line
+            finally:
+                response.close()
+        except ClusterConnectionError:
+            raise
+        except Exception as error:
+            raise ClusterConnectionError("Unable to open the Kubernetes pod log stream. Verify read-only pods/log permission.") from error
+
     def _splunk_logs(self, pods: list[Pod]) -> dict[str, list[str]]:
         """Retrieve recent logs from Splunk only after the Kubernetes pod-log API fails."""
         settings, headers, verify_tls = self._splunk_connection()
@@ -382,8 +462,8 @@ class ClusterClient:
             for container in containers:
                 labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
                 name = labels.get("com.docker.compose.service") or container.name
-                service = services.setdefault(name, {"name": name, "type": "Docker service", "desired": 0, "available": 0, "completed": 0, "exposed": False, "images": []})
                 state = container.attrs.get("State", {})
+                service = services.setdefault(name, {"name": name, "type": "Docker service", "desired": 0, "available": 0, "completed": 0, "exposed": False, "images": [], "containers": [], "published_ports": [], "deployed_at": state.get("StartedAt") or container.attrs.get("Created", "")})
                 completed = state.get("Status") == "exited" and state.get("ExitCode") == 0
                 if completed:
                     service["completed"] += 1
@@ -395,8 +475,14 @@ class ClusterClient:
                 image = container.attrs.get("Config", {}).get("Image")
                 if image and image not in service["images"]:
                     service["images"].append(image)
+                for container_port, bindings in published_ports.items():
+                    for binding in bindings or []:
+                        host_port = binding.get("HostPort")
+                        if host_port:
+                            service["published_ports"].append(f"localhost:{host_port} → {container_port}")
+                service["containers"].append({"name": container.name, "image": image or "Not available", "requests": {}, "limits": {}, "environment_variables": [], "environment_sources": [], "status": state.get("Status", "unknown"), "started_at": state.get("StartedAt") or ""})
             workloads = [
-                {**service, "image": ", ".join(service.pop("images", [])) or "Not available", "status": "Completed" if service["desired"] == 0 and service["completed"] else "Ready" if service["available"] == service["desired"] else "Degraded"}
+                {**service, "image": ", ".join(service.pop("images", [])) or "Not available", "status": "Completed" if service["desired"] == 0 and service["completed"] else "Ready" if service["available"] == service["desired"] else "Degraded", "updated": None, "unavailable": max(service["desired"] - service["available"], 0), "services": [{"name": service["name"], "type": "Docker service", "ports": sorted(set(service["published_ports"])) or ["Internal network only"], "selector": {}, "routes": sorted(set(service["published_ports"]))}], "routes": sorted(set(service["published_ports"])), "revision": "", "conditions": [], "labels": {}, "strategy": "Docker Compose (local test)"}
                 for service in sorted(services.values(), key=lambda item: item["name"])
             ]
             running = sum(pod.status == "Running" for pod in pods)
@@ -425,12 +511,61 @@ class ClusterClient:
             deployments = apps.list_namespaced_deployment(self.namespace).items
             statefulsets = apps.list_namespaced_stateful_set(self.namespace).items
             services = core.list_namespaced_service(self.namespace).items
+            routes_by_service: dict[str, list[str]] = {}
+            try:
+                networking = client.NetworkingV1Api()
+                for ingress in networking.list_namespaced_ingress(self.namespace).items:
+                    for rule in ingress.spec.rules or []:
+                        for path in getattr(rule.http, "paths", []) or []:
+                            service_name = getattr(getattr(path.backend, "service", None), "name", None)
+                            if service_name and rule.host:
+                                routes_by_service.setdefault(service_name, []).append(f"{rule.host}{path.path or ''}")
+            except Exception:
+                pass
+            try:
+                route_api = client.CustomObjectsApi()
+                for route in route_api.list_namespaced_custom_object("route.openshift.io", "v1", self.namespace, "routes").get("items", []):
+                    service_name = route.get("spec", {}).get("to", {}).get("name")
+                    host = route.get("spec", {}).get("host") or ((route.get("status", {}).get("ingress") or [{}])[0].get("host"))
+                    if service_name and host:
+                        routes_by_service.setdefault(service_name, []).append(host)
+            except Exception:
+                pass
             workloads = []
+            def safe_containers(containers: list[Any]) -> list[dict[str, Any]]:
+                details = []
+                for container in containers or []:
+                    resources = container.resources or client.V1ResourceRequirements()
+                    env_names = [entry.name for entry in (container.env or []) if entry.name]
+                    sources = []
+                    for source in container.env_from or []:
+                        if source.config_map_ref and source.config_map_ref.name:
+                            sources.append(f"ConfigMap: {source.config_map_ref.name}")
+                        if source.secret_ref and source.secret_ref.name:
+                            sources.append(f"Secret: {source.secret_ref.name}")
+                    details.append({"name": container.name, "image": container.image, "requests": dict(resources.requests or {}), "limits": dict(resources.limits or {}), "environment_variables": env_names, "environment_sources": sources})
+                return details
+
+            def related_services(labels: dict[str, str]) -> list[dict[str, Any]]:
+                results = []
+                for service in services:
+                    selector = service.spec.selector or {}
+                    if not selector or not all(labels.get(key) == value for key, value in selector.items()):
+                        continue
+                    ports = [f"{port.port}/{port.protocol or 'TCP'} → {port.target_port or port.port}" for port in (service.spec.ports or [])]
+                    results.append({"name": service.metadata.name, "type": service.spec.type or "ClusterIP", "ports": ports, "selector": selector, "routes": sorted(set(routes_by_service.get(service.metadata.name, [])))})
+                return results
+
             for item, kind in [*( (entry, "Deployment") for entry in deployments), *((entry, "StatefulSet") for entry in statefulsets)]:
                 desired = item.spec.replicas or 0
                 available = (item.status.available_replicas or 0) if kind == "Deployment" else (item.status.ready_replicas or 0)
                 images = ", ".join(container.image for container in item.spec.template.spec.containers)
-                workloads.append({"name": item.metadata.name, "type": kind, "desired": desired, "available": available, "exposed": False, "image": images or "Not available", "status": "Ready" if available >= desired else "Degraded"})
+                labels = dict(item.spec.template.metadata.labels or {})
+                related = related_services(labels)
+                conditions = [{"type": condition.type, "status": condition.status, "reason": condition.reason or "", "message": condition.message or ""} for condition in (item.status.conditions or [])]
+                progress = next((condition for condition in (item.status.conditions or []) if condition.type == "Progressing"), None)
+                deployed_at = getattr(progress, "last_update_time", None) or getattr(progress, "last_transition_time", None) or item.metadata.creation_timestamp
+                workloads.append({"name": item.metadata.name, "type": kind, "desired": desired, "available": available, "updated": item.status.updated_replicas or 0, "unavailable": item.status.unavailable_replicas or 0, "exposed": any(service["type"] in {"LoadBalancer", "NodePort"} for service in related), "image": images or "Not available", "status": "Ready" if available >= desired else "Degraded", "services": related, "routes": sorted({route for service in related for route in service.get("routes", [])}), "deployed_at": deployed_at.isoformat() if deployed_at else "", "revision": (item.metadata.annotations or {}).get("deployment.kubernetes.io/revision", ""), "containers": safe_containers(item.spec.template.spec.containers), "conditions": conditions, "labels": labels, "strategy": getattr(getattr(item.spec, "strategy", None), "type", None) or ("RollingUpdate" if kind == "Deployment" else "OrderedReady")})
             running = sum(pod.status == "Running" for pod in pods)
             return {
                 "workloads": sorted(workloads, key=lambda item: item["name"]),
@@ -534,6 +669,7 @@ def dashboard_snapshot(client: ClusterClient) -> dict[str, Any]:
         return any(f"-{name}-" in pod.name for name in completed_tasks)
 
     logs = client.logs(pods)
+    pod_events = client.pod_events(pods)
     analysis = {name: analyse_logs(lines) for name, lines in logs.items()}
     rank = {"healthy": 0, "warning": 1, "critical": 2}
     alerts = [
@@ -576,7 +712,17 @@ def dashboard_snapshot(client: ClusterClient) -> dict[str, Any]:
             "image": workload.get("image", "Not available"),
             "desired": workload.get("desired", 0),
             "available": workload.get("available", 0),
+            "updated": workload.get("updated", 0),
+            "unavailable": workload.get("unavailable", 0),
             "exposed": workload.get("exposed", False),
+            "services": workload.get("services", []),
+            "containers": workload.get("containers", []),
+            "conditions": workload.get("conditions", []),
+            "labels": workload.get("labels", {}),
+            "strategy": workload.get("strategy", "Not available"),
+            "routes": workload.get("routes", []),
+            "deployed_at": workload.get("deployed_at", ""),
+            "revision": workload.get("revision", ""),
             "resources": resource_details,
             "summary": {
                 "resource_count": len(resource_details),
@@ -587,7 +733,7 @@ def dashboard_snapshot(client: ClusterClient) -> dict[str, Any]:
             },
             "memory_history": [{"timestamp": timestamp, "memory_mib": round(sum(values), 2)} for timestamp, values in sorted(memory_history.items())],
         })
-    return {"generated_at": datetime.now(timezone.utc).isoformat(), "mode": client.active_source, "summary": {"pods": len(pods), "healthy_pods": sum(pod.risk == "healthy" for pod in pods), "average_cpu_percent": round(sum(pod.cpu_percent for pod in pods) / max(len(pods), 1), 1), "average_memory_percent": round(sum(pod.memory_percent for pod in pods) / max(len(pods), 1), 1), "alerts": len(alerts), **inventory["summary"]}, "inventory": inventory, "deployments": deployment_details, "pods": pod_records, "alerts": alerts, "logs": logs, "structured_logs": structured, "analysis": analysis, "forecasts": forecasts, "completed_tasks": list(completed_tasks)}
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "mode": client.active_source, "summary": {"pods": len(pods), "healthy_pods": sum(pod.risk == "healthy" for pod in pods), "average_cpu_percent": round(sum(pod.cpu_percent for pod in pods) / max(len(pods), 1), 1), "average_memory_percent": round(sum(pod.memory_percent for pod in pods) / max(len(pods), 1), 1), "alerts": len(alerts), **inventory["summary"]}, "inventory": inventory, "deployments": deployment_details, "pods": pod_records, "alerts": alerts, "logs": logs, "structured_logs": structured, "pod_events": pod_events, "analysis": analysis, "forecasts": forecasts, "completed_tasks": list(completed_tasks)}
 
 
 def _question_terms(question: str) -> set[str]:
@@ -1598,8 +1744,8 @@ def _incident_timestamp(incident: dict[str, Any]) -> float:
 class TelemetryCollector:
     """Keeps live telemetry moving even when nobody has the dashboard open."""
 
-    def __init__(self, client: ClusterClient, alerts: AlertEngine) -> None:
-        self.client, self.alerts = client, alerts
+    def __init__(self, client: ClusterClient, alerts: AlertEngine, notifier: AlertNotifier | None = None) -> None:
+        self.client, self.alerts, self.notifier = client, alerts, notifier
         self.interval_seconds = max(2, int(os.getenv("COLLECT_INTERVAL_SECONDS", "5")))
         self._snapshot: dict[str, Any] | None = None
         self._error: str | None = None
@@ -1679,6 +1825,10 @@ class TelemetryCollector:
             restart_events = self._record_restart_history(snapshot)
             self._capture_incident_evidence(snapshot, restart_events)
             rule_alerts = self.alerts.evaluate(snapshot)
+            # Deliver each newly raised rule breach once. Active alerts remain
+            # visible in the dashboard without producing notification noise.
+            if self.notifier:
+                self.notifier.deliver(self.alerts.consume_newly_raised())
             completed_tasks = set(snapshot.get("completed_tasks", []))
             rule_alerts = [alert for alert in rule_alerts if not any(f"-{name}-" in alert.get("pod", "") for name in completed_tasks)]
             system_alerts = [{**alert, "id": f"system:{alert['pod']}:{index}", "source": "system"} for index, alert in enumerate(snapshot["alerts"])]
