@@ -91,6 +91,7 @@ let urlMonitorActionMenu = '';
 let urlMonitorEditingId = '';
 let urlMonitorHistory = {};
 let urlMonitorHistoryHours = 24;
+let favouriteApplications = new Set();
 let correlationIntelligence = null;
 let developerInvestigationPod = '';
 let developerInvestigationWorkspace = null;
@@ -278,15 +279,26 @@ function applicationForDeployment(deployment) {
   return { name, deployment, relatedUrls, pods, errors, attention };
 }
 
+function loadFavouriteApplications() {
+  try { favouriteApplications = new Set(JSON.parse(window.localStorage.getItem('pulseops.favouriteApplications') || '[]')); } catch { favouriteApplications = new Set(); }
+}
+
+function toggleFavouriteApplication(name) {
+  favouriteApplications.has(name) ? favouriteApplications.delete(name) : favouriteApplications.add(name);
+  window.localStorage.setItem('pulseops.favouriteApplications', JSON.stringify([...favouriteApplications]));
+  renderApplicationHealth();
+}
+
 function renderApplicationHealth() {
   const target = document.querySelector('#application-health-content');
   if (!target || !data) return;
-  const applications = (data.deployments || []).map(applicationForDeployment).sort((left, right) => Number(right.attention) - Number(left.attention) || left.name.localeCompare(right.name));
+  if (!favouriteApplications.size) loadFavouriteApplications();
+  const applications = (data.deployments || []).map(applicationForDeployment).sort((left, right) => Number(favouriteApplications.has(right.name)) - Number(favouriteApplications.has(left.name)) || Number(right.attention) - Number(left.attention) || left.name.localeCompare(right.name));
   target.innerHTML = applications.length ? applications.map(app => {
     const ready = app.deployment.status === 'Completed' ? 'Completed' : `${app.deployment.available || 0}/${app.deployment.desired || 0} ready`;
     const availability = app.relatedUrls.length ? `${app.relatedUrls.filter(item => item.status === 'operational').length}/${app.relatedUrls.length} URLs up` : 'No URL monitor mapped';
     const risk = app.attention ? 'warning' : 'healthy';
-    return `<article class="application-health-card ${risk}"><div class="application-health-heading"><div><span class="${severityClass(risk)}">${app.attention ? 'needs review' : 'healthy'}</span><h3>${escapeHtml(app.name)}</h3></div><button type="button" data-application-open="${escapeHtml(app.name)}">Open</button></div><dl><div><dt>Deployment</dt><dd>${escapeHtml(ready)}</dd></div><div><dt>Availability</dt><dd>${escapeHtml(availability)}</dd></div><div><dt>Log errors</dt><dd>${app.errors}</dd></div><div><dt>Latest image</dt><dd>${escapeHtml(app.deployment.image || 'Not reported')}</dd></div></dl><small>Owner and runbook: add these in the investigation record when this service needs a named handoff.</small></article>`;
+    return `<article class="application-health-card ${risk}"><div class="application-health-heading"><div><span class="${severityClass(risk)}">${app.attention ? 'needs review' : 'healthy'}</span><h3>${escapeHtml(app.name)}</h3></div><div class="application-card-actions"><button type="button" class="favourite-app" data-application-favourite="${escapeHtml(app.name)}" aria-label="${favouriteApplications.has(app.name) ? 'Remove from' : 'Add to'} favourites">${favouriteApplications.has(app.name) ? '★' : '☆'}</button><button type="button" data-application-open="${escapeHtml(app.name)}">Open</button></div></div><dl><div><dt>Deployment</dt><dd>${escapeHtml(ready)}</dd></div><div><dt>Availability</dt><dd>${escapeHtml(availability)}</dd></div><div><dt>Log errors</dt><dd>${app.errors}</dd></div><div><dt>Latest image</dt><dd>${escapeHtml(app.deployment.image || 'Not reported')}</dd></div></dl><small>Owner and runbook: add these in the investigation record when this service needs a named handoff.</small></article>`;
   }).join('') : '<p class="empty">Application health appears when the connected source reports deployments.</p>';
   target.querySelectorAll('[data-application-open]').forEach(button => button.addEventListener('click', () => {
     const app = applications.find(item => item.name === button.dataset.applicationOpen);
@@ -294,6 +306,7 @@ function renderApplicationHealth() {
     if (pod) openDeveloperInvestigation(pod.name);
     else { selectedDeploymentName = button.dataset.applicationOpen; setWorkspacePage('workloads'); renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   }));
+  target.querySelectorAll('[data-application-favourite]').forEach(button => button.addEventListener('click', () => toggleFavouriteApplication(button.dataset.applicationFavourite)));
 }
 
 function renderManagementSummary() {
