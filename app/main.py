@@ -133,6 +133,7 @@ class AlertAcknowledgementUpdate(BaseModel):
 
 class NotificationSettingsUpdate(BaseModel):
     enabled: bool = False
+    mute_minutes: int = Field(default=0, ge=0, le=480)
 
 
 class AlertRuleCreate(BaseModel):
@@ -1230,8 +1231,8 @@ def notification_settings(request: Request) -> dict:
 @app.put("/api/notification-settings")
 def update_notification_settings(update: NotificationSettingsUpdate, request: Request) -> dict:
     actor = require_administrator(request)
-    settings = notifier.update(update.enabled)
-    _audit("notification_settings.updated", actor, "teams", {"enabled": settings["enabled"], "webhook_configured": settings["webhook_configured"]})
+    settings = notifier.update(update.enabled, update.mute_minutes)
+    _audit("notification_settings.updated", actor, "teams", {"enabled": settings["enabled"], "webhook_configured": settings["webhook_configured"], "mute_minutes": update.mute_minutes})
     return {"settings": settings}
 
 

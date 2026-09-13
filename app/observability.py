@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import get_close_matches
 import json
 import os
@@ -1481,11 +1481,19 @@ class AlertNotifier:
     def settings(self) -> dict[str, Any]:
         saved = self._load()
         webhook = os.getenv("TEAMS_WEBHOOK_URL", "").strip()
-        return {"enabled": bool(saved.get("enabled", os.getenv("NOTIFICATIONS_ENABLED", "false").lower() == "true")), "provider": "Microsoft Teams", "webhook_configured": bool(webhook and self._valid_webhook(webhook)), "last_delivery": self._last_delivery, "last_error": self._last_error}
+        muted_until = str(saved.get("muted_until", "")).strip()
+        try:
+            muted = bool(muted_until) and datetime.fromisoformat(muted_until.replace("Z", "+00:00")) > datetime.now(timezone.utc)
+        except ValueError:
+            muted = False
+        return {"enabled": bool(saved.get("enabled", os.getenv("NOTIFICATIONS_ENABLED", "false").lower() == "true")), "provider": "Microsoft Teams", "webhook_configured": bool(webhook and self._valid_webhook(webhook)), "muted": muted, "muted_until": muted_until if muted else None, "last_delivery": self._last_delivery, "last_error": self._last_error}
 
-    def update(self, enabled: bool) -> dict[str, Any]:
+    def update(self, enabled: bool, mute_minutes: int = 0) -> dict[str, Any]:
         with self._lock:
-            self._save({"enabled": bool(enabled)})
+            muted_until = ""
+            if mute_minutes > 0:
+                muted_until = (datetime.now(timezone.utc) + timedelta(minutes=mute_minutes)).isoformat()
+            self._save({"enabled": bool(enabled), "muted_until": muted_until})
         return self.settings()
 
     def _send(self, title: str, lines: list[str]) -> None:
@@ -1498,7 +1506,8 @@ class AlertNotifier:
             raise ValueError(f"Teams delivery failed with HTTP {response.status_code}.")
 
     def deliver(self, alerts: list[dict[str, Any]]) -> None:
-        if not alerts or not self.settings()["enabled"]:
+        settings = self.settings()
+        if not alerts or not settings["enabled"] or settings["muted"]:
             return
         try:
             lines = [part for item in alerts for part in (f"<b>{item.get('severity', 'warning').upper()}</b> · {item.get('pod', 'workload')}", str(item.get('message', 'Alert raised')))]
@@ -1509,7 +1518,8 @@ class AlertNotifier:
 
     def deliver_recoveries(self, alerts: list[dict[str, Any]]) -> None:
         """Send one concise recovery notice per evaluation, never repeated noise."""
-        if not alerts or not self.settings()["enabled"]:
+        settings = self.settings()
+        if not alerts or not settings["enabled"] or settings["muted"]:
             return
         try:
             lines = [part for item in alerts for part in (

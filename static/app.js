@@ -193,6 +193,19 @@ function renderUrlMonitors() {
   admin.querySelector('[data-url-edit-cancel]')?.addEventListener('click', () => { urlMonitorEditingId = ''; renderUrlMonitors(); });
 }
 
+function renderOperatingContext(snapshot) {
+  const target = document.querySelector('#operating-context');
+  if (!target || !snapshot) return;
+  const namespaces = [...new Set((snapshot.pods || []).map(pod => pod.namespace).filter(Boolean))];
+  const source = snapshot.mode === 'docker' ? 'Local Docker' : snapshot.mode === 'splunk' ? 'Splunk' : 'Kubernetes / OpenShift';
+  const ranges = [[60, 'Last hour'], [360, 'Last 6 hours'], [1440, 'Last 24 hours']];
+  target.innerHTML = `<div><span>Current scope</span><strong>${escapeHtml(namespaces.length ? namespaces.join(', ') : 'Waiting for namespace')}</strong></div><div><span>Evidence window</span><label><select data-context-range>${ranges.map(([minutes, label]) => `<option value="${minutes}" ${observabilityMinutes === minutes ? 'selected' : ''}>${label}</option>`).join('')}</select></label></div><div><span>Data source</span><strong>${escapeHtml(source)}</strong></div><small>Live values update automatically; retained trends use the selected evidence window.</small>`;
+  target.querySelector('[data-context-range]')?.addEventListener('change', event => {
+    observabilityMinutes = Number(event.target.value);
+    load();
+  });
+}
+
 function urlHistorySamples(monitor) {
   return (urlMonitorHistory[monitor.id] || []).slice().sort((left, right) => new Date(left.checked_at) - new Date(right.checked_at));
 }
@@ -1445,10 +1458,15 @@ function renderAlertNotifications() {
   const target = document.querySelector('#alert-notifications');
   if (!target) return;
   const settings = notificationSettings;
-  target.innerHTML = isAdministrator() ? `<section class="notification-delivery ${settings?.enabled && settings?.webhook_configured ? 'ready' : 'not-ready'}"><div><span>${settings?.enabled && settings?.webhook_configured ? 'Teams delivery active' : 'Teams delivery not active'}</span><strong>Microsoft Teams alert delivery</strong><small>${settings?.webhook_configured ? (settings.enabled ? `New alert breaches are delivered once. ${settings.last_delivery ? `Last delivery ${new Date(settings.last_delivery).toLocaleString()}.` : 'No alert has been sent yet.'}` : 'The approved Teams webhook is available. Enable delivery when you are ready.') : 'Add TEAMS_WEBHOOK_URL and NOTIFICATION_ALLOWED_HOSTS through the deployment Secret; the URL is never shown here.'}${settings?.last_error ? ` Latest delivery issue: ${escapeHtml(settings.last_error)}` : ''}</small></div><div><label class="notification-toggle"><input type="checkbox" data-notification-enabled ${settings?.enabled ? 'checked' : ''} ${settings?.webhook_configured ? '' : 'disabled'}> Enable Teams</label><button type="button" data-notification-test ${settings?.webhook_configured ? '' : 'disabled'}>Send test</button></div></section>` : '<p class="rule-view-only">Alert delivery and rules are managed by an administrator.</p>';
+  const deliveryCopy = settings?.muted ? `Teams notifications are paused until ${new Date(settings.muted_until).toLocaleString()}. Alerts and evidence continue to be collected.` : settings?.webhook_configured ? (settings.enabled ? `New alert breaches are delivered once and recovery is delivered once. ${settings.last_delivery ? `Last delivery ${new Date(settings.last_delivery).toLocaleString()}.` : 'No alert has been sent yet.'}` : 'The approved Teams webhook is available. Enable delivery when you are ready.') : 'Add TEAMS_WEBHOOK_URL and NOTIFICATION_ALLOWED_HOSTS through the deployment Secret; the URL is never shown here.';
+  target.innerHTML = isAdministrator() ? `<section class="notification-delivery ${settings?.enabled && settings?.webhook_configured && !settings?.muted ? 'ready' : 'not-ready'}"><div><span>${settings?.muted ? 'Teams delivery paused' : settings?.enabled && settings?.webhook_configured ? 'Teams delivery active' : 'Teams delivery not active'}</span><strong>Microsoft Teams alert delivery</strong><small>${deliveryCopy}${settings?.last_error ? ` Latest delivery issue: ${escapeHtml(settings.last_error)}` : ''}</small></div><div><label class="notification-toggle"><input type="checkbox" data-notification-enabled ${settings?.enabled ? 'checked' : ''} ${settings?.webhook_configured ? '' : 'disabled'}> Enable Teams</label><button type="button" data-notification-pause ${settings?.webhook_configured && settings?.enabled ? '' : 'disabled'}>${settings?.muted ? 'Resume now' : 'Pause 1 hour'}</button><button type="button" data-notification-test ${settings?.webhook_configured ? '' : 'disabled'}>Send test</button></div></section>` : '<p class="rule-view-only">Alert delivery and rules are managed by an administrator.</p>';
   target.querySelector('[data-notification-enabled]')?.addEventListener('change', async event => {
     event.target.disabled = true;
-    try { const response = await fetch('/api/notification-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || 'Unable to update notification delivery.'); notificationSettings = payload.settings; renderAlertNotifications(); } catch (error) { window.alert(error.message); event.target.disabled = false; }
+    try { const response = await fetch('/api/notification-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: event.target.checked, mute_minutes: 0 }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || 'Unable to update notification delivery.'); notificationSettings = payload.settings; renderAlertNotifications(); } catch (error) { window.alert(error.message); event.target.disabled = false; }
+  });
+  target.querySelector('[data-notification-pause]')?.addEventListener('click', async event => {
+    event.target.disabled = true;
+    try { const response = await fetch('/api/notification-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, mute_minutes: settings?.muted ? 0 : 60 }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || 'Unable to update notification delivery.'); notificationSettings = payload.settings; renderAlertNotifications(); } catch (error) { window.alert(error.message); event.target.disabled = false; }
   });
   target.querySelector('[data-notification-test]')?.addEventListener('click', async event => {
     event.target.disabled = true; event.target.textContent = 'Sending…';
@@ -1809,6 +1827,7 @@ async function load(preservePausedLogs = false) {
     sourceHealth = await readinessResponse.json().catch(() => ({ status: 'checking', collector: {} }));
     if (!response.ok) throw new Error(payload.detail || 'Live telemetry is unavailable.');
     data = payload;
+    renderOperatingContext(data);
     renderWelcomeBanner(data.summary);
     await restoreSharedInvestigation();
     acknowledgedAlerts = data.alert_acknowledgements || {};
@@ -1928,7 +1947,7 @@ document.querySelector('[data-log-evidence]').addEventListener('click', () => op
 document.querySelector('[data-alert-act]').addEventListener('click', () => {
   const alert = [...(data?.alerts || [])].sort((left, right) => severityRank[right.severity] - severityRank[left.severity])[0];
   const button = document.querySelector('[data-alert-act]');
-  if (alert?.pod && data?.pods?.some(pod => pod.name === alert.pod)) { openPodInvestigation(alert.pod); return; }
+  if (alert?.pod && data?.pods?.some(pod => pod.name === alert.pod)) { openDeveloperInvestigation(alert.pod); return; }
   button.textContent = 'No active alerts';
   setTimeout(() => { button.textContent = 'Investigate highest-priority alert'; }, 1800);
 });
