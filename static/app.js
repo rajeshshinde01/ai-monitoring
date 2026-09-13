@@ -265,6 +265,46 @@ async function loadUrlMonitors() {
   document.querySelector('#url-monitor-updated').textContent = `Last checked ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
   button?.classList.remove('loading'); if (button) button.querySelector('span').textContent = 'Run health check';
   renderUrlMonitors();
+  renderApplicationHealth();
+}
+
+function applicationForDeployment(deployment) {
+  const name = String(deployment?.name || 'Application');
+  const tokens = name.toLowerCase().split(/[-_.]/).filter(token => token.length > 3);
+  const relatedUrls = urlMonitors.filter(item => tokens.some(token => `${item.name} ${item.url}`.toLowerCase().includes(token)));
+  const pods = (deployment?.resources || []).map(item => item.pod).filter(Boolean);
+  const errors = pods.reduce((total, pod) => total + Number(data?.analysis?.[pod.name]?.counts?.errors || 0), 0);
+  const attention = deployment?.status !== 'Ready' && deployment?.status !== 'Completed' || errors > 0 || relatedUrls.some(item => ['down', 'degraded'].includes(item.status));
+  return { name, deployment, relatedUrls, pods, errors, attention };
+}
+
+function renderApplicationHealth() {
+  const target = document.querySelector('#application-health-content');
+  if (!target || !data) return;
+  const applications = (data.deployments || []).map(applicationForDeployment).sort((left, right) => Number(right.attention) - Number(left.attention) || left.name.localeCompare(right.name));
+  target.innerHTML = applications.length ? applications.map(app => {
+    const ready = app.deployment.status === 'Completed' ? 'Completed' : `${app.deployment.available || 0}/${app.deployment.desired || 0} ready`;
+    const availability = app.relatedUrls.length ? `${app.relatedUrls.filter(item => item.status === 'operational').length}/${app.relatedUrls.length} URLs up` : 'No URL monitor mapped';
+    const risk = app.attention ? 'warning' : 'healthy';
+    return `<article class="application-health-card ${risk}"><div class="application-health-heading"><div><span class="${severityClass(risk)}">${app.attention ? 'needs review' : 'healthy'}</span><h3>${escapeHtml(app.name)}</h3></div><button type="button" data-application-open="${escapeHtml(app.name)}">Open</button></div><dl><div><dt>Deployment</dt><dd>${escapeHtml(ready)}</dd></div><div><dt>Availability</dt><dd>${escapeHtml(availability)}</dd></div><div><dt>Log errors</dt><dd>${app.errors}</dd></div><div><dt>Latest image</dt><dd>${escapeHtml(app.deployment.image || 'Not reported')}</dd></div></dl><small>Owner and runbook: add these in the investigation record when this service needs a named handoff.</small></article>`;
+  }).join('') : '<p class="empty">Application health appears when the connected source reports deployments.</p>';
+  target.querySelectorAll('[data-application-open]').forEach(button => button.addEventListener('click', () => {
+    const app = applications.find(item => item.name === button.dataset.applicationOpen);
+    const pod = app?.pods[0];
+    if (pod) openDeveloperInvestigation(pod.name);
+    else { selectedDeploymentName = button.dataset.applicationOpen; setWorkspacePage('workloads'); renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  }));
+}
+
+function renderManagementSummary() {
+  const target = document.querySelector('#management-summary-content');
+  if (!target || !data) return;
+  const apps = (data.deployments || []).map(applicationForDeployment);
+  const atRisk = apps.filter(app => app.attention);
+  const recentChanges = (observabilityData.deployment_changes || []).length;
+  const unmappedUrls = apps.filter(app => !app.relatedUrls.length).length;
+  const unresolved = alertHistory.filter(event => event.state === 'active').length;
+  target.innerHTML = `<article><span>Service health</span><strong>${apps.length - atRisk.length}/${apps.length || 0} stable</strong><small>${atRisk.length ? `${atRisk.length} application${atRisk.length === 1 ? '' : 's'} need review.` : 'No application currently needs review.'}</small></article><article><span>Release watch</span><strong>${recentChanges} recent change${recentChanges === 1 ? '' : 's'}</strong><small>${recentChanges ? 'Open a workload to compare readiness and evidence after the release.' : 'No retained deployment change in the selected evidence window.'}</small></article><article><span>Alert lifecycle</span><strong>${unresolved} open</strong><small>${Number(alertHistoryReport?.windows?.['7d']?.recovered || 0)} recovered in the last 7 days.</small></article><article><span>Coverage</span><strong>${apps.length - unmappedUrls}/${apps.length || 0} URL mapped</strong><small>${unmappedUrls ? `${unmappedUrls} application${unmappedUrls === 1 ? '' : 's'} still need a URL monitor.` : 'Every reported application has a mapped URL monitor.'}</small></article>`;
 }
 
 async function saveUrlMonitor(event) {
@@ -1833,7 +1873,7 @@ async function load(preservePausedLogs = false) {
     acknowledgedAlerts = data.alert_acknowledgements || {};
     alertHistory = alertHistoryPayload.events || [];
     alertHistoryReport = alertHistoryPayload.report || alertHistoryReport;
-    renderSummary(data.summary); renderPlatformHealth(data.summary, data.alerts); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); if (!preservePausedLogs || logExplorerLiveTail) renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertNotifications(); renderAlertRules(data.alert_rules || []);
+    renderSummary(data.summary); renderPlatformHealth(data.summary, data.alerts); if (!document.querySelector('#assistant-form')) renderAssistant(); renderObservability(historyPayload); renderOverviewFocus(data, historyPayload); renderApplicationHealth(); renderManagementSummary(); renderWorkloads(data.inventory); renderDeploymentInspector(data.deployments || []); if (!preservePausedLogs || logExplorerLiveTail) renderLogExplorer(); renderAlerts(data.alerts); renderAlertHistory(alertHistory); renderIncidentEvidence(data.incident_evidence || []); renderAlertNotifications(); renderAlertRules(data.alert_rules || []);
     document.querySelector('#mode').textContent = data.mode === 'docker' ? 'Local Docker' : data.mode === 'splunk' ? 'Splunk' : 'Kubernetes';
     document.querySelector('#connection').textContent = 'Live';
     document.querySelector('#connection').classList.remove('disconnected');
