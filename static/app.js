@@ -200,7 +200,7 @@ function renderOperatingContext(snapshot) {
   const namespaces = [...new Set((snapshot.pods || []).map(pod => pod.namespace).filter(Boolean))];
   const source = snapshot.mode === 'docker' ? 'Local Docker' : snapshot.mode === 'splunk' ? 'Splunk' : 'Kubernetes / OpenShift';
   const ranges = [[60, 'Last hour'], [360, 'Last 6 hours'], [1440, 'Last 24 hours']];
-  target.innerHTML = `<div><span>Current scope</span><strong>${escapeHtml(namespaces.length ? namespaces.join(', ') : 'Waiting for namespace')}</strong></div><div><span>Evidence window</span><label><select data-context-range>${ranges.map(([minutes, label]) => `<option value="${minutes}" ${observabilityMinutes === minutes ? 'selected' : ''}>${label}</option>`).join('')}</select></label></div><div><span>Data source</span><strong>${escapeHtml(source)}</strong></div><small>Live values update automatically; retained trends use the selected evidence window.</small>`;
+  target.innerHTML = `<div><span>Monitoring scope</span><strong>${escapeHtml(namespaces.length ? namespaces.join(', ') : 'Waiting for namespace')}</strong></div><div><span>Evidence window</span><label><select data-context-range>${ranges.map(([minutes, label]) => `<option value="${minutes}" ${observabilityMinutes === minutes ? 'selected' : ''}>${label}</option>`).join('')}</select></label></div><div><span>Data source</span><strong>${escapeHtml(source)}</strong></div><small>Live values update automatically; retained trends use the selected evidence window.</small>`;
   target.querySelector('[data-context-range]')?.addEventListener('change', event => {
     observabilityMinutes = Number(event.target.value);
     load();
@@ -289,6 +289,14 @@ function toggleFavouriteApplication(name) {
   renderApplicationHealth();
 }
 
+async function saveApplicationProfile(name, owner, runbookUrl) {
+  const response = await fetch(`/api/application-profiles/${encodeURIComponent(name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, runbook_url: runbookUrl }) });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.detail || 'Unable to save application ownership.');
+  data.application_profiles = { ...(data.application_profiles || {}), [name]: payload.profile };
+  renderApplicationHealth(); renderManagementSummary();
+}
+
 function renderApplicationHealth() {
   const target = document.querySelector('#application-health-content');
   if (!target || !data) return;
@@ -298,7 +306,9 @@ function renderApplicationHealth() {
     const ready = app.deployment.status === 'Completed' ? 'Completed' : `${app.deployment.available || 0}/${app.deployment.desired || 0} ready`;
     const availability = app.relatedUrls.length ? `${app.relatedUrls.filter(item => item.status === 'operational').length}/${app.relatedUrls.length} URLs up` : 'No URL monitor mapped';
     const risk = app.attention ? 'warning' : 'healthy';
-    return `<article class="application-health-card ${risk}"><div class="application-health-heading"><div><span class="${severityClass(risk)}">${app.attention ? 'needs review' : 'healthy'}</span><h3>${escapeHtml(app.name)}</h3></div><div class="application-card-actions"><button type="button" class="favourite-app" data-application-favourite="${escapeHtml(app.name)}" aria-label="${favouriteApplications.has(app.name) ? 'Remove from' : 'Add to'} favourites">${favouriteApplications.has(app.name) ? '★' : '☆'}</button><button type="button" data-application-open="${escapeHtml(app.name)}">Open</button></div></div><dl><div><dt>Deployment</dt><dd>${escapeHtml(ready)}</dd></div><div><dt>Availability</dt><dd>${escapeHtml(availability)}</dd></div><div><dt>Log errors</dt><dd>${app.errors}</dd></div><div><dt>Latest image</dt><dd>${escapeHtml(app.deployment.image || 'Not reported')}</dd></div></dl><small>Owner and runbook: add these in the investigation record when this service needs a named handoff.</small></article>`;
+    const profile = data.application_profiles?.[app.name] || {}; const profileText = profile.owner ? `Owner: ${profile.owner}${profile.runbook_url ? ' · Runbook linked' : ''}` : 'Owner and runbook not configured';
+    const adminProfile = isAdministrator() ? `<details class="application-profile"><summary>Set owner & runbook</summary><label>Owner<input data-profile-owner="${escapeHtml(app.name)}" value="${escapeHtml(profile.owner || '')}" placeholder="Team or person"></label><label>Runbook link<input data-profile-runbook="${escapeHtml(app.name)}" value="${escapeHtml(profile.runbook_url || '')}" placeholder="https://…"></label><button type="button" data-profile-save="${escapeHtml(app.name)}">Save</button></details>` : '';
+    return `<article class="application-health-card ${risk}"><div class="application-health-heading"><div><span class="${severityClass(risk)}">${app.attention ? 'needs review' : 'healthy'}</span><h3>${escapeHtml(app.name)}</h3></div><div class="application-card-actions"><button type="button" class="favourite-app" data-application-favourite="${escapeHtml(app.name)}" aria-label="${favouriteApplications.has(app.name) ? 'Remove from' : 'Add to'} favourites">${favouriteApplications.has(app.name) ? '★' : '☆'}</button><button type="button" data-application-open="${escapeHtml(app.name)}">Open</button></div></div><dl><div><dt>Deployment</dt><dd>${escapeHtml(ready)}</dd></div><div><dt>Availability</dt><dd>${escapeHtml(availability)}</dd></div><div><dt>Log errors</dt><dd>${app.errors}</dd></div><div><dt>Latest image</dt><dd>${escapeHtml(app.deployment.image || 'Not reported')}</dd></div></dl><small>${escapeHtml(profileText)}</small>${adminProfile}</article>`;
   }).join('') : '<p class="empty">Application health appears when the connected source reports deployments.</p>';
   target.querySelectorAll('[data-application-open]').forEach(button => button.addEventListener('click', () => {
     const app = applications.find(item => item.name === button.dataset.applicationOpen);
@@ -307,6 +317,7 @@ function renderApplicationHealth() {
     else { selectedDeploymentName = button.dataset.applicationOpen; setWorkspacePage('workloads'); renderDeploymentInspector(data.deployments || []); document.querySelector('#deployment-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   }));
   target.querySelectorAll('[data-application-favourite]').forEach(button => button.addEventListener('click', () => toggleFavouriteApplication(button.dataset.applicationFavourite)));
+  target.querySelectorAll('[data-profile-save]').forEach(button => button.addEventListener('click', async () => { button.disabled = true; try { await saveApplicationProfile(button.dataset.profileSave, target.querySelector(`[data-profile-owner="${CSS.escape(button.dataset.profileSave)}"]`).value, target.querySelector(`[data-profile-runbook="${CSS.escape(button.dataset.profileSave)}"]`).value); } catch (error) { window.alert(error.message); button.disabled = false; } }));
 }
 
 function renderManagementSummary() {

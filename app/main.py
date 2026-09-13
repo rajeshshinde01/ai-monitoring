@@ -136,6 +136,11 @@ class NotificationSettingsUpdate(BaseModel):
     mute_minutes: int = Field(default=0, ge=0, le=480)
 
 
+class ApplicationProfileUpdate(BaseModel):
+    owner: str = Field(default="", max_length=120)
+    runbook_url: str = Field(default="", max_length=500)
+
+
 class AlertRuleCreate(BaseModel):
     name: str = Field(min_length=3, max_length=120)
     metric: str = Field(pattern="^(memory_percent|cpu_percent|restarts|errors)$")
@@ -293,6 +298,23 @@ def _prometheus_settings_file() -> Path:
 
 def _url_monitors_file() -> Path:
     return DATA_DIR / "url-monitors.json"
+
+
+def _application_profiles_file() -> Path:
+    return DATA_DIR / "application-profiles.json"
+
+
+def _read_application_profiles() -> dict[str, dict[str, str]]:
+    try:
+        value = json.loads(_application_profiles_file().read_text())
+        return value if isinstance(value, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_application_profiles(profiles: dict[str, dict[str, str]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _application_profiles_file().write_text(json.dumps(profiles, indent=2) + "\n")
 
 
 def _url_monitor_history_file() -> Path:
@@ -1016,6 +1038,7 @@ def overview(request: Request) -> dict:
     try:
         snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
         snapshot["alert_acknowledgements"] = _read_alert_acknowledgements()
+        snapshot["application_profiles"] = _read_application_profiles()
         snapshot["source_context"] = {
             "repository_url": os.getenv("SOURCE_REPOSITORY_URL", "").strip(),
             "commit_sha": os.getenv("SOURCE_COMMIT_SHA", "").strip(),
@@ -1220,6 +1243,22 @@ def delete_alert_rule(rule_id: str, request: Request) -> dict:
 @app.get("/api/alert-history")
 def alert_history() -> dict:
     return {"events": alerts.history(), "report": alerts.history_report()}
+
+
+@app.put("/api/application-profiles/{application_name}")
+def update_application_profile(application_name: str, update: ApplicationProfileUpdate, request: Request) -> dict:
+    actor = require_administrator(request)
+    clean_name = application_name.strip()
+    if not clean_name:
+        raise HTTPException(status_code=422, detail="Application name is required.")
+    runbook_url = update.runbook_url.strip()
+    if runbook_url and not runbook_url.startswith(("https://", "http://")):
+        raise HTTPException(status_code=422, detail="Runbook link must start with https:// or http://")
+    profiles = _read_application_profiles()
+    profiles[clean_name] = {"owner": update.owner.strip(), "runbook_url": runbook_url}
+    _write_application_profiles(profiles)
+    _audit("application_profile.updated", actor, clean_name, {"owner": update.owner.strip(), "has_runbook": bool(runbook_url)})
+    return {"profile": profiles[clean_name]}
 
 
 @app.get("/api/notification-settings")
