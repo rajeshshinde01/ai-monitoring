@@ -1214,6 +1214,7 @@ class AlertEngine:
         self.breach_file = self.data_dir / "alert-breaches.json"
         self._lock = Lock()
         self._newly_raised: list[dict[str, Any]] = []
+        self._newly_resolved: list[dict[str, Any]] = []
         if not self.rules_file.exists():
             self._write(self.rules_file, DEFAULT_ALERT_RULES)
 
@@ -1314,10 +1315,47 @@ class AlertEngine:
         with self._lock:
             return self._load(self.history_file, [])[-100:]
 
+    def history_report(self) -> dict[str, Any]:
+        """Summarise retained alert lifecycle data without inventing trends.
+
+        Counts are based only on alert instances written by ``evaluate``.  A new
+        installation therefore clearly reports that it is still collecting
+        history instead of presenting a misleading 7/30-day chart.
+        """
+        events = self.history()
+        now = datetime.now(timezone.utc)
+
+        def event_timestamp(value: Any) -> float:
+            try:
+                return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError):
+                return 0.0
+
+        def window(days: int) -> dict[str, int]:
+            boundary = now.timestamp() - days * 86400
+            scoped = [event for event in events if event_timestamp(event.get("first_seen")) >= boundary]
+            return {
+                "raised": len(scoped),
+                "recovered": sum(event.get("state") == "resolved" for event in scoped),
+                "critical": sum(event.get("severity") == "critical" for event in scoped),
+            }
+
+        return {
+            "retained_events": len(events),
+            "windows": {"7d": window(7), "30d": window(30)},
+            "collecting": not bool(events),
+        }
+
     def consume_newly_raised(self) -> list[dict[str, Any]]:
         """Return alerts that became active in the latest evaluation once only."""
         with self._lock:
             events, self._newly_raised = self._newly_raised, []
+        return events
+
+    def consume_newly_resolved(self) -> list[dict[str, Any]]:
+        """Return recovery transitions once, for optional notification delivery."""
+        with self._lock:
+            events, self._newly_resolved = self._newly_resolved, []
         return events
 
     @staticmethod
@@ -1342,6 +1380,7 @@ class AlertEngine:
             breaches = {}
         active: list[dict[str, Any]] = []
         newly_raised: list[dict[str, Any]] = []
+        newly_resolved: list[dict[str, Any]] = []
         for rule in self.rules():
             if not rule.get("enabled"):
                 continue
@@ -1390,11 +1429,13 @@ class AlertEngine:
                 if event.get("state") == "active" and event["id"] not in active_ids:
                     event["state"] = "resolved"
                     event["resolved_at"] = now
+                    newly_resolved.append(dict(event))
             self._write(self.history_file, history[-300:])
             temporary = self.breach_file.with_suffix(".tmp")
             temporary.write_text(json.dumps(breaches))
             temporary.replace(self.breach_file)
             self._newly_raised = newly_raised
+            self._newly_resolved = newly_resolved
         return active
 
 
@@ -1462,6 +1503,20 @@ class AlertNotifier:
         try:
             lines = [part for item in alerts for part in (f"<b>{item.get('severity', 'warning').upper()}</b> · {item.get('pod', 'workload')}", str(item.get('message', 'Alert raised')))]
             self._send("L1ControlScope: new alert", lines)
+            self._last_delivery, self._last_error = datetime.now(timezone.utc).isoformat(), None
+        except (requests.RequestException, ValueError) as error:
+            self._last_error = str(error)
+
+    def deliver_recoveries(self, alerts: list[dict[str, Any]]) -> None:
+        """Send one concise recovery notice per evaluation, never repeated noise."""
+        if not alerts or not self.settings()["enabled"]:
+            return
+        try:
+            lines = [part for item in alerts for part in (
+                f"<b>RECOVERED</b> · {item.get('pod', 'workload')}",
+                str(item.get("message", "Alert condition is no longer present")),
+            )]
+            self._send("L1ControlScope: alert recovered", lines)
             self._last_delivery, self._last_error = datetime.now(timezone.utc).isoformat(), None
         except (requests.RequestException, ValueError) as error:
             self._last_error = str(error)
@@ -1886,6 +1941,7 @@ class TelemetryCollector:
             # visible in the dashboard without producing notification noise.
             if self.notifier:
                 self.notifier.deliver(self.alerts.consume_newly_raised())
+                self.notifier.deliver_recoveries(self.alerts.consume_newly_resolved())
             completed_tasks = set(snapshot.get("completed_tasks", []))
             rule_alerts = [alert for alert in rule_alerts if not any(f"-{name}-" in alert.get("pod", "") for name in completed_tasks)]
             system_alerts = [{**alert, "id": f"system:{alert['pod']}:{index}", "source": "system"} for index, alert in enumerate(snapshot["alerts"])]

@@ -1218,7 +1218,7 @@ def delete_alert_rule(rule_id: str, request: Request) -> dict:
 
 @app.get("/api/alert-history")
 def alert_history() -> dict:
-    return {"events": alerts.history()}
+    return {"events": alerts.history(), "report": alerts.history_report()}
 
 
 @app.get("/api/notification-settings")
