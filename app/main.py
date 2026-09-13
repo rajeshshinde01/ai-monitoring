@@ -1,8 +1,9 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
 import os
+import asyncio
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
@@ -36,9 +37,13 @@ auth = LocalAuth(DATA_DIR)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     collector.start()
+    url_monitor_task = asyncio.create_task(_url_monitor_poll_loop())
     try:
         yield
     finally:
+        url_monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await url_monitor_task
         collector.stop()
 
 
@@ -289,6 +294,62 @@ def _url_monitors_file() -> Path:
     return DATA_DIR / "url-monitors.json"
 
 
+def _url_monitor_history_file() -> Path:
+    return DATA_DIR / "url-monitor-history.json"
+
+
+def _read_url_monitor_history() -> list[dict[str, Any]]:
+    try:
+        value = json.loads(_url_monitor_history_file().read_text())
+        return value if isinstance(value, list) else []
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+
+
+def _write_url_monitor_history(samples: list[dict[str, Any]]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    _url_monitor_history_file().write_text(json.dumps(samples, separators=(",", ":")) + "\n")
+
+
+def _retain_url_monitor_history(results: list[dict[str, Any]]) -> None:
+    """Persist compact check outcomes for operational trend and incident views."""
+    cutoff = datetime.now(timezone.utc).timestamp() - (7 * 24 * 60 * 60)
+    retained = []
+    for sample in _read_url_monitor_history():
+        try:
+            if datetime.fromisoformat(str(sample.get("checked_at", "")).replace("Z", "+00:00")).timestamp() >= cutoff:
+                retained.append(sample)
+        except ValueError:
+            continue
+    retained.extend({
+        "monitor_id": item.get("id"),
+        "environment": item.get("environment"),
+        "status": item.get("status"),
+        "latency_ms": item.get("latency_ms"),
+        "status_code": item.get("status_code"),
+        "error": item.get("error"),
+        "checked_at": item.get("checked_at"),
+    } for item in results if item.get("id"))
+    _write_url_monitor_history(retained)
+
+
+def _url_monitor_history_payload(monitors: list[dict[str, Any]], hours: int = 24) -> dict[str, list[dict[str, Any]]]:
+    cutoff = datetime.now(timezone.utc).timestamp() - (hours * 60 * 60)
+    ids = {item.get("id") for item in monitors}
+    grouped: dict[str, list[dict[str, Any]]] = {str(item_id): [] for item_id in ids if item_id}
+    for sample in _read_url_monitor_history():
+        monitor_id = str(sample.get("monitor_id") or "")
+        if monitor_id not in grouped:
+            continue
+        try:
+            observed_at = datetime.fromisoformat(str(sample.get("checked_at", "")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if observed_at >= cutoff:
+            grouped[monitor_id].append(sample)
+    return grouped
+
+
 def _read_url_monitors() -> list[dict[str, Any]]:
     try:
         value = json.loads(_url_monitors_file().read_text())
@@ -342,7 +403,7 @@ def _monitor_target(monitor: dict[str, Any]) -> str:
     return target
 
 
-async def _check_url_monitors() -> list[dict[str, Any]]:
+async def _check_url_monitors(*, retain_history: bool = True) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     async with httpx.AsyncClient(follow_redirects=False, timeout=5.0) as http:
         for monitor in _read_url_monitors():
@@ -358,7 +419,21 @@ async def _check_url_monitors() -> list[dict[str, Any]]:
                     result["latency_ms"] = round((time.perf_counter() - started) * 1000)
                     result["error"] = error.__class__.__name__
             results.append(result)
+    if retain_history:
+        _retain_url_monitor_history(results)
     return results
+
+
+async def _url_monitor_poll_loop() -> None:
+    """Keep URL monitoring independent of an open browser session."""
+    while True:
+        try:
+            await _check_url_monitors()
+        except Exception:
+            # Individual endpoint failures are already represented in check results.
+            # The loop must stay alive even if monitor configuration changes mid-check.
+            pass
+        await asyncio.sleep(60)
 
 
 def _correlate_operations(snapshot: dict[str, Any], monitors: list[dict[str, Any]], deployment_changes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -470,6 +545,49 @@ def _deployment_comparisons(snapshot: dict[str, Any], history: dict[str, Any]) -
         regressed = bool(deltas and (deltas["errors"] > 0 or deltas["restarts"] > 0 or deltas["ready_percent"] < 0 or deltas["memory_percent"] >= 15))
         comparisons.append({"id": change.get("id"), "workload": name, "changed_at": changed_at, "previous_image": change.get("previous_image", ""), "current_image": change.get("current_image", current.get("image", "")), "change_type": change.get("change_type"), "before": before, "after": after, "deltas": deltas, "status": "regressed" if regressed else "stable" if before and after else "collecting", "window_minutes": 15})
     return comparisons
+
+
+def _operational_change_timeline(history: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return a small, human-readable change feed from retained runtime evidence."""
+    relevant_kinds = {"deployment", "runtime", "restart", "health", "alert", "log"}
+    entries: list[dict[str, Any]] = []
+    for event in history.get("events", []):
+        if event.get("kind") not in relevant_kinds:
+            continue
+        entries.append({
+            "id": event.get("id", ""),
+            "timestamp": float(event.get("timestamp", 0)),
+            "kind": event.get("kind", "change"),
+            "severity": event.get("severity", "healthy"),
+            "title": str(event.get("title", "Operational change")),
+            "detail": str(event.get("detail", "")),
+            "pod": event.get("pod"),
+        })
+    return entries[:12]
+
+
+def _recovery_timeline(history: dict[str, Any]) -> list[dict[str, Any]]:
+    """Identify observed healthy transitions that follow an operational warning."""
+    active_issues: dict[str, dict[str, Any]] = {}
+    recoveries: list[dict[str, Any]] = []
+    events = sorted(history.get("events", []), key=lambda item: float(item.get("timestamp", 0)))
+    for event in events:
+        pod = str(event.get("pod") or "")
+        if not pod:
+            continue
+        severity = str(event.get("severity", "healthy"))
+        if severity in {"warning", "critical"}:
+            active_issues[pod] = event
+            continue
+        if severity != "healthy" or event.get("kind") not in {"runtime", "health", "deployment"}:
+            continue
+        issue = active_issues.pop(pod, None)
+        if not issue:
+            continue
+        recovered_at = float(event.get("timestamp", 0))
+        started_at = float(issue.get("timestamp", recovered_at))
+        recoveries.append({"pod": pod, "timestamp": recovered_at, "duration_seconds": max(0, round(recovered_at - started_at)), "issue": str(issue.get("title", "Operational warning")), "recovery": str(event.get("title", "Healthy state observed"))})
+    return list(reversed(recoveries))[:6]
 
 
 def _default_prometheus_settings() -> dict:
@@ -1311,7 +1429,13 @@ def test_prometheus_settings(request: Request, candidate: PrometheusSettingsUpda
 @app.get("/api/url-monitors")
 async def url_monitors(request: Request) -> dict:
     require_developer_or_administrator(request)
-    return {"monitors": await _check_url_monitors(), "environments": ["dev", "qa", "uat", "prod"]}
+    monitors = await _check_url_monitors()
+    return {
+        "monitors": monitors,
+        "environments": ["dev", "qa", "uat", "prod"],
+        "history": _url_monitor_history_payload(monitors),
+        "history_window_hours": 24,
+    }
 
 
 @app.get("/api/operations-intelligence/correlations")
@@ -1319,8 +1443,16 @@ async def operations_intelligence_correlations(request: Request) -> dict:
     require_developer_or_administrator(request)
     snapshot = snapshot_for_user(collector.snapshot(), request.state.user)
     history = collector.observability_report(1440)
-    result = _correlate_operations(snapshot, await _check_url_monitors(), history.get("deployment_changes", []))
-    result["deployment_comparisons"] = _deployment_comparisons(snapshot, history)
+    result = _correlate_operations(snapshot, await _check_url_monitors(retain_history=False), history.get("deployment_changes", []))
+    comparisons = _deployment_comparisons(snapshot, history)
+    result["deployment_comparisons"] = comparisons
+    result["deployment_verdicts"] = [{
+        "workload": item["workload"], "timestamp": item["changed_at"], "status": item["status"],
+        "verdict": "Possible regression" if item["status"] == "regressed" else "Stable after deployment" if item["status"] == "stable" else "Watching this deployment",
+        "detail": "Readiness, errors, restarts, CPU, or memory worsened after the image change." if item["status"] == "regressed" else "The available before-and-after evidence shows no material regression." if item["status"] == "stable" else "The release has been observed; more before-and-after evidence is being collected.",
+    } for item in comparisons[:6]]
+    result["operational_timeline"] = _operational_change_timeline(history)
+    result["recoveries"] = _recovery_timeline(history)
     return result
 
 

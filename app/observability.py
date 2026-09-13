@@ -538,13 +538,35 @@ class ClusterClient:
                     resources = container.resources or client.V1ResourceRequirements()
                     env_names = [entry.name for entry in (container.env or []) if entry.name]
                     sources = []
+                    for entry in container.env or []:
+                        value_from = entry.value_from
+                        if value_from and value_from.config_map_key_ref and value_from.config_map_key_ref.name:
+                            sources.append(f"ConfigMap: {value_from.config_map_key_ref.name}")
+                        if value_from and value_from.secret_key_ref and value_from.secret_key_ref.name:
+                            sources.append(f"Secret: {value_from.secret_key_ref.name}")
                     for source in container.env_from or []:
                         if source.config_map_ref and source.config_map_ref.name:
                             sources.append(f"ConfigMap: {source.config_map_ref.name}")
                         if source.secret_ref and source.secret_ref.name:
                             sources.append(f"Secret: {source.secret_ref.name}")
-                    details.append({"name": container.name, "image": container.image, "requests": dict(resources.requests or {}), "limits": dict(resources.limits or {}), "environment_variables": env_names, "environment_sources": sources})
+                    details.append({"name": container.name, "image": container.image, "requests": dict(resources.requests or {}), "limits": dict(resources.limits or {}), "environment_variables": env_names, "environment_sources": sorted(set(sources))})
                 return details
+
+            def safe_volumes(volumes: list[Any]) -> list[str]:
+                references = []
+                for volume in volumes or []:
+                    source = volume.config_map
+                    if source and source.name:
+                        references.append(f"ConfigMap: {source.name}")
+                    source = volume.secret
+                    if source and source.secret_name:
+                        references.append(f"Secret: {source.secret_name}")
+                    source = volume.persistent_volume_claim
+                    if source and source.claim_name:
+                        references.append(f"PVC: {source.claim_name}")
+                    if volume.empty_dir is not None:
+                        references.append(f"EmptyDir: {volume.name}")
+                return sorted(set(references))
 
             def related_services(labels: dict[str, str]) -> list[dict[str, Any]]:
                 results = []
@@ -565,7 +587,7 @@ class ClusterClient:
                 conditions = [{"type": condition.type, "status": condition.status, "reason": condition.reason or "", "message": condition.message or ""} for condition in (item.status.conditions or [])]
                 progress = next((condition for condition in (item.status.conditions or []) if condition.type == "Progressing"), None)
                 deployed_at = getattr(progress, "last_update_time", None) or getattr(progress, "last_transition_time", None) or item.metadata.creation_timestamp
-                workloads.append({"name": item.metadata.name, "type": kind, "desired": desired, "available": available, "updated": item.status.updated_replicas or 0, "unavailable": item.status.unavailable_replicas or 0, "exposed": any(service["type"] in {"LoadBalancer", "NodePort"} for service in related), "image": images or "Not available", "status": "Ready" if available >= desired else "Degraded", "services": related, "routes": sorted({route for service in related for route in service.get("routes", [])}), "deployed_at": deployed_at.isoformat() if deployed_at else "", "revision": (item.metadata.annotations or {}).get("deployment.kubernetes.io/revision", ""), "containers": safe_containers(item.spec.template.spec.containers), "conditions": conditions, "labels": labels, "strategy": getattr(getattr(item.spec, "strategy", None), "type", None) or ("RollingUpdate" if kind == "Deployment" else "OrderedReady")})
+                workloads.append({"name": item.metadata.name, "type": kind, "desired": desired, "available": available, "updated": item.status.updated_replicas or 0, "unavailable": item.status.unavailable_replicas or 0, "exposed": any(service["type"] in {"LoadBalancer", "NodePort"} for service in related), "image": images or "Not available", "status": "Ready" if available >= desired else "Degraded", "services": related, "routes": sorted({route for service in related for route in service.get("routes", [])}), "deployed_at": deployed_at.isoformat() if deployed_at else "", "revision": (item.metadata.annotations or {}).get("deployment.kubernetes.io/revision", ""), "containers": safe_containers(item.spec.template.spec.containers), "configuration_references": safe_volumes(item.spec.template.spec.volumes), "service_account": item.spec.template.spec.service_account_name or "default", "conditions": conditions, "labels": labels, "strategy": getattr(getattr(item.spec, "strategy", None), "type", None) or ("RollingUpdate" if kind == "Deployment" else "OrderedReady")})
             running = sum(pod.status == "Running" for pod in pods)
             return {
                 "workloads": sorted(workloads, key=lambda item: item["name"]),
@@ -717,6 +739,8 @@ def dashboard_snapshot(client: ClusterClient) -> dict[str, Any]:
             "exposed": workload.get("exposed", False),
             "services": workload.get("services", []),
             "containers": workload.get("containers", []),
+            "configuration_references": workload.get("configuration_references", []),
+            "service_account": workload.get("service_account", "Not reported"),
             "conditions": workload.get("conditions", []),
             "labels": workload.get("labels", {}),
             "strategy": workload.get("strategy", "Not available"),
@@ -1492,6 +1516,8 @@ class OperationalHistory:
                 "running": snapshot.get("summary", {}).get("running_pods", 0),
                 "alerts": snapshot.get("summary", {}).get("alerts", 0),
                 "errors": sum(item.get("counts", {}).get("errors", 0) for item in analysis.values()),
+                "warnings": sum(item.get("counts", {}).get("warnings", 0) for item in analysis.values()),
+                "restarts": sum(int(pod.get("restarts", 0)) for pod in pods),
             },
             "pods": [{"name": pod["name"], "cpu": pod.get("cpu_percent", 0), "memory": pod.get("memory_percent", 0), "restarts": pod.get("restarts", 0), "risk": pod.get("risk", "healthy")} for pod in pods],
             "workloads": [
@@ -1704,25 +1730,38 @@ class IncidentEvidence:
             if not self.buffers[pod] and pod not in active:
                 self.buffers.pop(pod, None)
 
-    def capture(self, pod: str, kind: str, detail: str, snapshot: dict[str, Any], now: float) -> None:
+    def capture(self, pod: str, kind: str, detail: str, snapshot: dict[str, Any], now: float, severity: str = "warning") -> bool:
         """Persist the collected evidence immediately; the live buffer remains memory-only."""
+        # A continuing error must not create a new snapshot every collection
+        # cycle. Capture the first meaningful occurrence, then wait for the
+        # rolling evidence window before storing the same trigger again.
+        for existing in reversed(self.incidents):
+            if existing.get("pod") == pod and existing.get("kind") == kind and existing.get("detail") == detail:
+                if now - _incident_timestamp(existing) < self.window_seconds:
+                    return False
         pod_state = next((item for item in snapshot.get("pods", []) if item.get("name") == pod), {})
         log_window = list(self.buffers.get(pod, []))[-2000:]
+        deployment = next((item for item in snapshot.get("deployments", []) if any(resource.get("pod", {}).get("name") == pod for resource in item.get("resources", []))), {})
+        active_alerts = [item for item in snapshot.get("alerts", []) if item.get("pod") == pod]
         incident = {
             "id": f"incident-{uuid4().hex[:12]}",
             "pod": pod,
             "kind": kind,
+            "severity": severity,
             "detail": detail,
             "detected_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
             "window_minutes": 15,
             "window_start": datetime.fromtimestamp(now - self.window_seconds, timezone.utc).isoformat(),
             "pod_state": pod_state,
+            "deployment": {key: deployment.get(key) for key in ("name", "image", "status", "available", "desired", "revision")},
+            "active_alerts": [{key: alert.get(key) for key in ("severity", "message", "source")} for alert in active_alerts[:10]],
             "analysis": snapshot.get("analysis", {}).get(pod, {}),
             "log_window": log_window,
         }
         self.incidents.append(incident)
         self._prune_and_archive(now)
         self._persist()
+        return True
 
     def summaries(self) -> list[dict[str, Any]]:
         return [
@@ -1812,7 +1851,26 @@ class TelemetryCollector:
                 self.incident_evidence.capture(event["pod"], "restart", f"Restart count increased by {event['increase']}.", snapshot, now)
             elif event.get("kind") in {"runtime_failure", "eviction"}:
                 label = "Eviction or termination" if event["kind"] == "eviction" else "Runtime failure"
-                self.incident_evidence.capture(event["pod"], event["kind"], f"{label}: {event.get('previous_state', 'previous state')} → {event.get('state', 'current state')}", snapshot, now)
+                self.incident_evidence.capture(event["pod"], event["kind"], f"{label}: {event.get('previous_state', 'previous state')} → {event.get('state', 'current state')}", snapshot, now, "critical")
+        # Preserve a single evidence package when the same masked error repeats.
+        # This catches application failures even when the container does not restart.
+        import re
+        for pod, records in snapshot.get("structured_logs", {}).items():
+            patterns: dict[str, dict[str, Any]] = {}
+            for record in records:
+                level = str(record.get("level", "")).casefold()
+                if level not in {"error", "critical"}:
+                    continue
+                message = str(record.get("message") or record.get("raw") or "Error event")
+                normalized = re.sub(r"\b[0-9a-f]{8,}\b|\d+", "#", message.casefold())[:220]
+                current = patterns.setdefault(normalized, {"count": 0, "message": message[:220], "critical": False})
+                current["count"] += 1
+                current["critical"] = current["critical"] or level == "critical"
+            for pattern in patterns.values():
+                if pattern["count"] < 3 and not pattern["critical"]:
+                    continue
+                detail = f"Repeated application error: {pattern['count']} matching event(s). {pattern['message']}"
+                self.incident_evidence.capture(pod, "repeated_error", detail, snapshot, now, "critical" if pattern["critical"] else "warning")
         snapshot["incident_evidence"] = self.incident_evidence.summaries()
 
     def status(self) -> dict[str, Any]:
@@ -1823,7 +1881,6 @@ class TelemetryCollector:
         try:
             snapshot = dashboard_snapshot(self.client)
             restart_events = self._record_restart_history(snapshot)
-            self._capture_incident_evidence(snapshot, restart_events)
             rule_alerts = self.alerts.evaluate(snapshot)
             # Deliver each newly raised rule breach once. Active alerts remain
             # visible in the dashboard without producing notification noise.
@@ -1834,6 +1891,9 @@ class TelemetryCollector:
             system_alerts = [{**alert, "id": f"system:{alert['pod']}:{index}", "source": "system"} for index, alert in enumerate(snapshot["alerts"])]
             snapshot["alerts"] = [*system_alerts, *rule_alerts]
             snapshot["summary"]["alerts"] = len(snapshot["alerts"])
+            # Capture after alert evaluation so every evidence package includes
+            # the rule and system alerts that were active at detection time.
+            self._capture_incident_evidence(snapshot, restart_events)
             self.history.record(snapshot)
             snapshot["observability"] = self.history.report(snapshot, minutes=60)
             snapshot["alert_rules"] = self.alerts.rules()

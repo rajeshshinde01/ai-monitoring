@@ -1,0 +1,51 @@
+/* URL Monitoring history: neutral, readable panels in either theme. */
+.url-history-grid,
+.url-history-grid > section {
+  background: #fff;
+}
+
+/* Prevent the site-wide dark header treatment from leaking into these compact cards. */
+.url-history-grid > section > header {
+  display: flex;
+  align-items: flex-start;
+  min-height: 52px;
+  margin: 0 0 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid #e5ebf2;
+  background: transparent;
+  box-shadow: none;
+}
+
+.url-history-grid > section > header > div {
+  min-width: 0;
+}
+
+.url-history-grid > section > header strong,
+.url-history-grid > section > header small {
+  max-width: 100%;
+}
+
+.pulseops-workspace[data-theme="dark"] .url-history-grid,
+.pulseops-workspace[data-theme="dark"] .url-history-grid > section {
+  border-color: #29405f;
+  background: #102039;
+}
+
+.pulseops-workspace[data-theme="dark"] .url-history-grid > section > header {
+  border-color: #29405f;
+}
+
+@media (max-width: 680px) {
+  .url-history-grid > section > header {
+    min-height: auto;
+  }
+}
+
+.pulseops-workspace[data-theme="dark"] .url-history-grid header small,
+.pulseops-workspace[data-theme="dark"] .url-history-heading p:last-child,
+.pulseops-workspace[data-theme="dark"] .url-history-stats span,
+.pulseops-workspace[data-theme="dark"] .url-availability-history article small,
+.pulseops-workspace[data-theme="dark"] .url-incident-timeline article small,
+.pulseops-workspace[data-theme="dark"] .url-history-empty {
+  color: #a5b7ce;
+}
