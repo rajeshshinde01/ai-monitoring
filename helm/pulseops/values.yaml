@@ -47,6 +47,17 @@ splunk:
   existingSecret: ""
   tokenKey: "token"
 
+# Optional internal ElasticWatch integration. ElasticWatch retains the
+# Elasticsearch credentials; PulseOps calls its read-only service API.
+elasticWatch:
+  enabled: false
+  baseUrl: "http://elasticwatch:8000"
+  allowedHosts: "elasticwatch"
+  verifyTls: true
+  allowHttp: false
+  existingSecret: ""
+  apiKeyKey: "dashboard-api-key"
+
 # Local sign-in is available. OIDC configuration is reserved for the future SSO flow.
 # Keep OIDC secrets in an existing Secret, not in this file.
 auth:

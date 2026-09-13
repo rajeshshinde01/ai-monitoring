@@ -76,6 +76,16 @@ spec:
               value: {{ .Values.splunk.allowedHosts | quote }}
             - name: SPLUNK_VERIFY_TLS
               value: {{ .Values.splunk.verifyTls | quote }}
+            - name: ELASTICWATCH_ENABLED
+              value: {{ .Values.elasticWatch.enabled | quote }}
+            - name: ELASTICWATCH_URL
+              value: {{ .Values.elasticWatch.baseUrl | quote }}
+            - name: ELASTICWATCH_ALLOWED_HOSTS
+              value: {{ .Values.elasticWatch.allowedHosts | quote }}
+            - name: ELASTICWATCH_VERIFY_TLS
+              value: {{ .Values.elasticWatch.verifyTls | quote }}
+            - name: ELASTICWATCH_ALLOW_HTTP
+              value: {{ .Values.elasticWatch.allowHttp | quote }}
             - name: AUTH_MODE
               value: {{ .Values.auth.mode | quote }}
             - name: AUTH_ALLOWED_EMAIL_DOMAIN
@@ -123,6 +133,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.splunk.existingSecret }}
                   key: {{ .Values.splunk.tokenKey }}
+            {{- end }}
+            {{- if .Values.elasticWatch.existingSecret }}
+            - name: ELASTICWATCH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.elasticWatch.existingSecret }}
+                  key: {{ .Values.elasticWatch.apiKeyKey }}
             {{- end }}
           livenessProbe:
             httpGet:

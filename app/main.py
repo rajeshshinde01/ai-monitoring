@@ -634,6 +634,67 @@ def _default_splunk_settings() -> dict:
     }
 
 
+# ElasticWatch remains the specialised Elasticsearch service. PulseOps calls its
+# documented read-only API server-to-server, so dashboard keys and Elasticsearch
+# credentials never reach a browser.
+_ELASTICWATCH_ENDPOINTS = {
+    "overview": "/api/overview",
+    "filebeat-logs": "/api/overview",
+    "nodes": "/api/elasticsearch/nodes",
+    "indices": "/api/elasticsearch/indices",
+    "shards": "/api/elasticsearch/shards",
+    "pending-tasks": "/api/elasticsearch/pending-tasks",
+    "allocation": "/api/elasticsearch/allocation-guidance",
+    "performance": "/api/elasticsearch/performance",
+    "lifecycle": "/api/elasticsearch/lifecycle",
+    "backups": "/api/elasticsearch/backups",
+    "recoveries": "/api/elasticsearch/recoveries",
+    "hot-threads": "/api/elasticsearch/hot-threads",
+    "alert-rules": "/api/alert-rules",
+}
+
+
+def _elasticwatch_settings() -> dict[str, Any]:
+    return {
+        "enabled": os.getenv("ELASTICWATCH_ENABLED", "false").lower() == "true",
+        "base_url": os.getenv("ELASTICWATCH_URL", "http://elasticwatch:8000").rstrip("/"),
+        "verify_tls": os.getenv("ELASTICWATCH_VERIFY_TLS", "true").lower() == "true",
+    }
+
+
+def _validated_elasticwatch_settings() -> dict[str, Any]:
+    settings = _elasticwatch_settings()
+    if not settings["enabled"]:
+        return settings
+    parsed = urlparse(settings["base_url"])
+    allowed_hosts = {item.strip().lower() for item in os.getenv("ELASTICWATCH_ALLOWED_HOSTS", "elasticwatch").split(",") if item.strip()}
+    allow_http = os.getenv("ELASTICWATCH_ALLOW_HTTP", "false").lower() == "true"
+    internal_hosts = {"elasticwatch", "elasticwatch.gss-dev", "elasticwatch.gss-dev.svc", "elasticwatch.gss-dev.svc.cluster.local"}
+    is_internal_service = parsed.hostname in internal_hosts
+    if not parsed.hostname or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise HTTPException(status_code=503, detail="Elastic Watch service URL is invalid.")
+    if parsed.scheme not in ({"https", "http"} if (allow_http or is_internal_service) else {"https"}):
+        raise HTTPException(status_code=503, detail="Elastic Watch must use HTTPS, except for the approved internal Kubernetes service.")
+    if parsed.hostname.lower() not in allowed_hosts:
+        raise HTTPException(status_code=503, detail="Elastic Watch service host is not approved. Add it to ELASTICWATCH_ALLOWED_HOSTS.")
+    return settings
+
+
+def _elasticwatch_payload(section: str) -> Any:
+    if section not in _ELASTICWATCH_ENDPOINTS:
+        raise HTTPException(status_code=404, detail="Unknown Elastic Watch area.")
+    settings = _validated_elasticwatch_settings()
+    if not settings["enabled"]:
+        raise HTTPException(status_code=503, detail="Elastic Watch is not connected yet. An administrator must enable the internal service connection.")
+    headers = {"X-ElasticWatch-Key": os.environ["ELASTICWATCH_API_KEY"]} if os.getenv("ELASTICWATCH_API_KEY", "").strip() else {}
+    try:
+        response = requests.get(f'{settings["base_url"]}{_ELASTICWATCH_ENDPOINTS[section]}', headers=headers, timeout=12, verify=settings["verify_tls"])
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as error:
+        raise HTTPException(status_code=503, detail="Elastic Watch is unavailable. Check its service, approved network route, API key, and TLS settings.") from error
+
+
 def _read_splunk_settings() -> dict:
     settings = _default_splunk_settings()
     try:
@@ -1398,6 +1459,23 @@ def test_splunk_settings(request: Request, candidate: SplunkSettingsUpdate | Non
 def get_prometheus_settings(request: Request) -> dict:
     require_administrator(request)
     return {"settings": _read_prometheus_settings(), "token_configured": bool(os.getenv("PROMETHEUS_API_TOKEN", "").strip())}
+
+
+@app.get("/api/elasticwatch/status")
+def elasticwatch_status(request: Request) -> dict[str, Any]:
+    require_developer_or_administrator(request)
+    settings = _elasticwatch_settings()
+    return {
+        "enabled": settings["enabled"],
+        "service_url_configured": bool(settings["base_url"]),
+        "api_key_configured": bool(os.getenv("ELASTICWATCH_API_KEY", "").strip()),
+    }
+
+
+@app.get("/api/elasticwatch/{section}")
+def elasticwatch_section(section: str, request: Request) -> Any:
+    require_developer_or_administrator(request)
+    return _elasticwatch_payload(section)
 
 
 @app.put("/api/prometheus-settings")

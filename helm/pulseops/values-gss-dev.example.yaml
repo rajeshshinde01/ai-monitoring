@@ -1,0 +1,43 @@
+# Example configuration for a read-only PulseOps deployment in gss-dev.
+# Replace image.repository and image.tag with the image published by your CI/CD pipeline.
+
+image:
+  repository: registry.example.com/observability/pulseops-ai
+  tag: "replace-with-release-tag"
+
+serviceAccount:
+  create: true
+  name: pulseops-gss-dev-reader
+
+rbac:
+  create: true
+
+monitoring:
+  target: kubernetes
+  namespace: gss-dev
+  logTailLines: 200
+  collectIntervalSeconds: 10
+
+# Keep local operational state across restarts. Use an approved StorageClass when required.
+persistence:
+  enabled: true
+  storageClass: ""
+  size: 2Gi
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 384Mi
+  limits:
+    cpu: 750m
+    memory: 768Mi
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+# Enable and configure only after an approved ingress hostname is available.
+ingress:
+  enabled: false
+
