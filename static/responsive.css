@@ -1,0 +1,41 @@
+/* Final responsive hardening: preserve readable data and reliable touch use
+   from compact phones through wide desktop screens. */
+.pulseops-workspace { overflow-x:hidden; }
+.pulseops-workspace button,.pulseops-workspace a,.pulseops-workspace select,.pulseops-workspace summary { touch-action:manipulation; }
+.pulseops-workspace .table-wrap { max-width:100%; overscroll-behavior-inline:contain; -webkit-overflow-scrolling:touch; }
+
+@media (max-width:900px) {
+  .pulseops-workspace .topbar { gap:14px; }
+  .pulseops-workspace .header-right,.pulseops-workspace .header-controls { flex-wrap:wrap; }
+  .pulseops-workspace .panel-title { align-items:flex-start; flex-wrap:wrap; }
+  .pulseops-workspace .panel-title>.muted,.pulseops-workspace .panel-title>.panel-purpose { margin-left:0; }
+  .pulseops-workspace .inventory-controls,.pulseops-workspace .url-monitor-tools { align-items:stretch; flex-wrap:wrap; }
+  .pulseops-workspace .inventory-controls input,.pulseops-workspace .url-monitor-tools input { min-width:0; }
+}
+
+@media (max-width:680px) {
+  .pulseops-workspace .workspace-nav { scrollbar-width:none; }
+  .pulseops-workspace .workspace-nav::-webkit-scrollbar { display:none; }
+  .pulseops-workspace .workspace-nav a { min-height:40px; }
+  .pulseops-workspace .panel { padding:16px; }
+  .pulseops-workspace .panel-title h2 { font-size:1rem; }
+  .pulseops-workspace .topbar h1 { font-size:clamp(1.5rem,8vw,1.9rem); }
+  .pulseops-workspace .subtitle { line-height:1.45; }
+  .pulseops-workspace .header-status { width:100%; }
+  .pulseops-workspace .header-controls { width:100%; justify-content:flex-start; }
+  .pulseops-workspace .current-user { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pulseops-workspace .url-monitor-tools label,.pulseops-workspace .inventory-controls label { flex:1 1 180px; }
+  .pulseops-workspace .url-monitor-tools select,.pulseops-workspace .inventory-controls select { width:100%; }
+}
+
+@media (max-width:430px) {
+  .pulseops-workspace .topbar { padding:16px; }
+  .pulseops-workspace main { padding:16px 12px 28px; }
+  .pulseops-workspace .sidebar { padding:12px; }
+  .pulseops-workspace .sidebar-brand { padding-left:4px; }
+  .pulseops-workspace .workspace-nav { gap:4px; }
+  .pulseops-workspace .workspace-nav a { padding:8px; font-size:.72rem; }
+  .pulseops-workspace .panel { padding:14px; border-radius:10px; }
+  .pulseops-workspace .panel-description,.pulseops-workspace .helper { font-size:.74rem; line-height:1.5; }
+  .pulseops-workspace .header-controls > button,.pulseops-workspace .header-controls > details summary { min-height:38px; }
+}
