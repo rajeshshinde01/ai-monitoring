@@ -28,12 +28,6 @@ services:
       SOURCE_COMMIT_SHA: ${SOURCE_COMMIT_SHA:-}
       SOURCE_DEFAULT_BRANCH: ${SOURCE_DEFAULT_BRANCH:-main}
       SOURCE_PATH: ${SOURCE_PATH:-}
-      ELASTICWATCH_ENABLED: ${ELASTICWATCH_ENABLED:-false}
-      ELASTICWATCH_URL: ${ELASTICWATCH_URL:-http://host.docker.internal:8091}
-      ELASTICWATCH_ALLOWED_HOSTS: ${ELASTICWATCH_ALLOWED_HOSTS:-host.docker.internal}
-      ELASTICWATCH_VERIFY_TLS: ${ELASTICWATCH_VERIFY_TLS:-true}
-      ELASTICWATCH_ALLOW_HTTP: ${ELASTICWATCH_ALLOW_HTTP:-true}
-      ELASTICWATCH_API_KEY: ${ELASTICWATCH_API_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${KUBECONFIG_PATH:-/dev/null}:/root/.kube/config:ro

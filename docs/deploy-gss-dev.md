@@ -49,17 +49,3 @@ API is installed and available.
 The Role does not include write verbs, Secret access, ConfigMap access, or
 cluster-wide permissions. Add any future access only when the matching screen
 actually needs it.
-
-## Optional Elastic Watch workspace
-
-Deploy ElasticWatch as an internal `ClusterIP` service in `gss-dev`, then set
-the `elasticWatch` block in the PulseOps values file to `enabled: true`.
-PulseOps calls ElasticWatch's read-only API from the server side and displays
-its cluster, node, index, shard, Filebeat-log, and alert information under the
-**Elastic Watch** workspace.
-
-Use the same Kubernetes Secret only to inject the `DASHBOARD_API_KEY` key into
-PulseOps. The PulseOps deployment must not receive the Elasticsearch username,
-password, or CA private material. See
-[`docs/elasticwatch-integration.md`](elasticwatch-integration.md) for the
-complete connection steps.

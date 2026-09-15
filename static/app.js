@@ -2028,13 +2028,6 @@ function setWorkspacePage(page) {
 function syncWorkspacePage() {
   const targetId = (window.location.hash || '#overview').slice(1);
   const page = pageFromTarget(targetId);
-  // Elastic Watch has been removed from L1ControlScope. Canonicalise any old
-  // bookmark so the address bar does not imply that the feature still exists.
-  if (targetId === 'elastic-watch') {
-    const url = new URL(window.location.href);
-    url.hash = '#overview';
-    window.history.replaceState(null, '', url);
-  }
   // A shared investigation link needs its identifier only while the
   // investigation workspace is open. Keep every other application URL clean.
   if (page !== 'investigation') {
@@ -2094,7 +2087,7 @@ function setAdministratorLoginMode(enabled) {
   administratorLoginMode = enabled;
   const identity = document.querySelector('#login-email');
   const message = document.querySelector('#login-message');
-  document.querySelector('#login-identity-label').innerHTML = enabled ? `Administrator username <input id="login-email" type="text" required value="${escapeHtml(breakGlassUsername)}" readonly>` : 'Company email <input id="login-email" type="text" required placeholder="name@db.com">';
+  document.querySelector('#login-identity-label').innerHTML = enabled ? `Administrator username <input id="login-email" type="text" required value="${escapeHtml(breakGlassUsername)}" readonly>` : 'Work email <input id="login-email" type="text" required placeholder="name@db.com">';
   document.querySelector('#login-password-label').innerHTML = enabled ? 'Administrator password <input id="login-password" type="password" required minlength="12" placeholder="Enter or set a strong password">' : 'Password <input id="login-password" type="password" required minlength="10" placeholder="At least 10 characters">';
   document.querySelector('#admin-login-toggle').textContent = enabled ? 'Use company-user sign in' : 'Administrator sign in';
   message.textContent = enabled ? (breakGlassSetupAvailable ? 'First administrator setup: choose a strong password with at least 12 characters.' : 'Use the administrator password configured by your system administrator.') : 'First time here? Enter your company email and choose a password to create your account.';

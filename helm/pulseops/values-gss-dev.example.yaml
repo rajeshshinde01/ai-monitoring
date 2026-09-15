@@ -40,13 +40,3 @@ service:
 # Enable and configure only after an approved ingress hostname is available.
 ingress:
   enabled: false
-
-# Enable after ElasticWatch is deployed in the same namespace and its API key is
-# stored in the referenced Secret. PulseOps receives only this API key, never
-# the Elasticsearch username or password.
-elasticWatch:
-  enabled: false
-  baseUrl: "http://elasticwatch.gss-dev.svc.cluster.local:8000"
-  allowedHosts: "elasticwatch.gss-dev.svc.cluster.local"
-  existingSecret: "elasticwatch-secrets"
-  apiKeyKey: "DASHBOARD_API_KEY"
