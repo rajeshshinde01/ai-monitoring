@@ -1,0 +1,35 @@
+L1ControlScope — future improvement backlog
+
+Keep the current implementation focused on monitoring, evidence, and investigation.
+Avoid adding features that require users to learn a separate process.
+
+1. Multi-environment collection
+   - Collect read-only Kubernetes evidence from gss-dev, gss-qa, gss-uat, and later environments.
+   - Map each namespace to a clear environment name in the UI.
+   - Show environment comparison only where live evidence exists.
+
+2. Promotion and version visibility
+   - Compare deployed image tags and, where available, commit references across environments.
+   - Highlight version drift between Dev, QA, and UAT.
+   - Keep a retained release timeline suitable for monthly reporting.
+
+3. Service Health maturity
+   - Retain enough URL-monitor evidence for complete monthly reporting.
+   - Keep coverage visible: never estimate missing monitoring periods.
+   - Treat 99.5% as an internal service target until an approved SLA policy, exclusions, and maintenance windows exist.
+
+4. URL-monitor coverage
+   - Clearly identify applications without an enabled URL monitor.
+   - Keep company intranet URL support administrator-controlled.
+   - Confirm production DNS and network connectivity from the L1ControlScope namespace to monitored intranet endpoints.
+
+5. Production-readiness validation
+   - Verify namespace-scoped read-only RBAC in gss-dev before rollout.
+   - Verify PVC provisioning and retention across pod restarts.
+   - Verify Teams notification delivery with an approved webhook.
+   - Confirm data-source failures are visible and actionable.
+
+6. User-experience assurance
+   - Complete a final desktop, tablet, and mobile test pass.
+   - Review keyboard navigation, focus states, contrast, and empty/error states.
+   - Keep screens concise: reveal deeper data only after the user selects a workload or endpoint.

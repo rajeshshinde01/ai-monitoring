@@ -314,7 +314,9 @@ def _write_url_monitor_history(samples: list[dict[str, Any]]) -> None:
 
 def _retain_url_monitor_history(results: list[dict[str, Any]]) -> None:
     """Persist compact check outcomes for operational trend and incident views."""
-    cutoff = datetime.now(timezone.utc).timestamp() - (7 * 24 * 60 * 60)
+    # Keep enough evidence for the management service-health view to report a
+    # complete rolling month, with a small buffer for month boundaries.
+    cutoff = datetime.now(timezone.utc).timestamp() - (35 * 24 * 60 * 60)
     retained = []
     for sample in _read_url_monitor_history():
         try:
@@ -351,6 +353,107 @@ def _url_monitor_history_payload(monitors: list[dict[str, Any]], hours: int = 24
     return grouped
 
 
+def _service_health_report(days: int = 30) -> dict[str, Any]:
+    """Summarise retained monitoring evidence for a management-facing view.
+
+    This is deliberately based on stored check outcomes and alert lifecycle
+    records only.  When a monitor is new, the response reports the smaller
+    evidence window instead of extrapolating it into a monthly figure.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - (days * 24 * 60 * 60)
+    monitors = _read_url_monitors()
+    monitor_by_id = {str(item.get("id")): item for item in monitors if item.get("id")}
+    samples_by_id: dict[str, list[dict[str, Any]]] = {identifier: [] for identifier in monitor_by_id}
+    all_timestamps: list[float] = []
+    for sample in _read_url_monitor_history():
+        monitor_id = str(sample.get("monitor_id") or "")
+        if monitor_id not in samples_by_id:
+            continue
+        try:
+            observed_at = datetime.fromisoformat(str(sample.get("checked_at", "")).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            continue
+        if observed_at < cutoff:
+            continue
+        samples_by_id[monitor_id].append(sample)
+        all_timestamps.append(observed_at)
+
+    target = 99.5
+    endpoints: list[dict[str, Any]] = []
+    total_checks = total_healthy = 0
+    for monitor_id, monitor in monitor_by_id.items():
+        samples = sorted(samples_by_id.get(monitor_id, []), key=lambda item: str(item.get("checked_at", "")))
+        enabled = bool(monitor.get("enabled", True))
+        successful = sum(item.get("status") == "operational" for item in samples)
+        count = len(samples)
+        if enabled:
+            total_checks += count
+            total_healthy += successful
+        availability = round(100 * successful / count, 2) if count else None
+        endpoints.append({
+            "id": monitor_id,
+            "name": monitor.get("name") or monitor.get("url") or "Unnamed endpoint",
+            "environment": monitor.get("environment") or "unknown",
+            "enabled": enabled,
+            "checks": count,
+            "availability_percent": availability,
+            "current_status": samples[-1].get("status") if samples else "collecting",
+            "last_checked": samples[-1].get("checked_at") if samples else None,
+            "meets_target": availability is not None and availability >= target,
+        })
+
+    endpoints.sort(key=lambda item: (not item["enabled"], item["availability_percent"] is None, item["availability_percent"] if item["availability_percent"] is not None else 101, item["name"].lower()))
+    environment_summary: list[dict[str, Any]] = []
+    for environment in ("dev", "qa", "uat", "preprod", "prod"):
+        scoped = [item for item in endpoints if str(item.get("environment", "")).lower() == environment and item["enabled"]]
+        if not scoped:
+            continue
+        checks = sum(int(item["checks"]) for item in scoped)
+        weighted_availability = (
+            round(sum(float(item["availability_percent"]) * int(item["checks"]) for item in scoped if item["availability_percent"] is not None) / checks, 2)
+            if checks and any(item["availability_percent"] is not None for item in scoped) else None
+        )
+        environment_summary.append({
+            "environment": environment,
+            "endpoints": len(scoped),
+            "checks": checks,
+            "availability_percent": weighted_availability,
+            "attention": sum(item["availability_percent"] is None or not item["meets_target"] or item["current_status"] in {"down", "degraded"} for item in scoped),
+        })
+    coverage_hours = round((max(all_timestamps) - min(all_timestamps)) / 3600, 1) if len(all_timestamps) > 1 else 0
+    availability = round(100 * total_healthy / total_checks, 2) if total_checks else None
+    alert_report = alerts.history_report()
+    snapshot = collector.snapshot()
+    history = collector.observability_report(1440)
+    deployment_changes = history.get("deployment_changes", [])
+    active_alerts = snapshot.get("alerts", [])
+    attention = [item for item in endpoints if item["enabled"] and (item["availability_percent"] is None or not item["meets_target"] or item["current_status"] in {"down", "degraded"})]
+    return {
+        "generated_at": now.isoformat(),
+        "period_days": days,
+        "availability_target_percent": target,
+        "coverage": {
+            "observed_hours": coverage_hours,
+            "requested_hours": days * 24,
+            "checks": total_checks,
+            "collecting": coverage_hours < days * 24,
+            "retention_days": 35,
+        },
+        "availability": {"percent": availability, "meets_target": availability is not None and availability >= target, "enabled_endpoints": sum(item["enabled"] for item in endpoints)},
+        "endpoints": endpoints,
+        "environments": environment_summary,
+        "releases": {"observed_last_24h": len(deployment_changes), "note": "Release activity is retained for the current 24-hour operational window."},
+        "incidents": {
+            "open": len(active_alerts),
+            "raised_30d": int(alert_report.get("windows", {}).get("30d", {}).get("raised", 0)),
+            "recovered_30d": int(alert_report.get("windows", {}).get("30d", {}).get("recovered", 0)),
+            "collecting": bool(alert_report.get("collecting", True)),
+        },
+        "attention": attention,
+    }
+
+
 def _read_url_monitors() -> list[dict[str, Any]]:
     try:
         value = json.loads(_url_monitors_file().read_text())
@@ -364,19 +467,32 @@ def _write_url_monitors(monitors: list[dict[str, Any]]) -> None:
     _url_monitors_file().write_text(json.dumps(monitors, indent=2) + "\n")
 
 
+def _is_company_intranet_host(hostname: str) -> bool:
+    """Permit company intranet DNS names without a per-URL Helm setting."""
+    host = hostname.strip().lower().rstrip(".")
+    return host.endswith(".intranet.db.com")
+
+
+def _is_url_monitor_host_allowed(hostname: str) -> bool:
+    host = hostname.strip().lower().rstrip(".")
+    configured = {item.strip().lower().rstrip(".") for item in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if item.strip()}
+    return _is_company_intranet_host(host) or host in configured
+
+
 def _validated_monitor(update: UrlMonitorCreate) -> dict[str, Any]:
     values = update.model_dump()
     parsed = urlparse(values["url"].strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
         raise HTTPException(status_code=422, detail="Enter a complete HTTP or HTTPS URL without credentials or a fragment.")
-    allowed = {host.strip().lower() for host in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if host.strip()}
-    if allowed and parsed.hostname.lower() not in allowed:
+    allowed = _is_url_monitor_host_allowed(parsed.hostname)
+    configured_hosts = {host.strip().lower() for host in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if host.strip()}
+    if configured_hosts and not allowed:
         raise HTTPException(status_code=422, detail="This hostname is not in URL_MONITOR_ALLOWED_HOSTS.")
     if not allowed:
         try:
             addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
             if any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback or ipaddress.ip_address(address).is_link_local for address in addresses):
-                raise HTTPException(status_code=422, detail="Private hosts must be explicitly listed in URL_MONITOR_ALLOWED_HOSTS.")
+                raise HTTPException(status_code=422, detail="Private hosts must use an approved company intranet hostname.")
         except socket.gaierror:
             pass
     values["name"] = values["name"].strip()
@@ -392,10 +508,11 @@ def _monitor_target(monitor: dict[str, Any]) -> str:
     base = str(monitor["url"]).rstrip("/")
     target = base + str(monitor.get("health_path", ""))
     parsed = urlparse(target)
-    allowed = {host.strip().lower() for host in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if host.strip()}
+    allowed = _is_url_monitor_host_allowed(parsed.hostname)
+    configured_hosts = {host.strip().lower() for host in os.getenv("URL_MONITOR_ALLOWED_HOSTS", "").split(",") if host.strip()}
     if not parsed.hostname or parsed.scheme not in {"http", "https"}:
         raise ValueError("Invalid monitor URL")
-    if allowed and parsed.hostname.lower() not in allowed:
+    if configured_hosts and not allowed:
         raise ValueError("Host is not allowlisted")
     if not allowed:
         addresses = {item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80))}
@@ -1220,6 +1337,15 @@ def delete_alert_rule(rule_id: str, request: Request) -> dict:
 @app.get("/api/alert-history")
 def alert_history() -> dict:
     return {"events": alerts.history(), "report": alerts.history_report()}
+
+
+@app.get("/api/service-health")
+def service_health(request: Request, days: int = Query(default=30, ge=7, le=30)) -> dict:
+    require_developer_or_administrator(request)
+    try:
+        return _service_health_report(days)
+    except ClusterConnectionError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/api/notification-settings")
