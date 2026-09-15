@@ -56,7 +56,7 @@ elasticWatch:
   verifyTls: true
   allowHttp: false
   existingSecret: ""
-  apiKeyKey: "dashboard-api-key"
+  apiKeyKey: "DASHBOARD_API_KEY"
 
 # Local sign-in is available. OIDC configuration is reserved for the future SSO flow.
 # Keep OIDC secrets in an existing Secret, not in this file.

@@ -78,6 +78,7 @@ let deploymentSort = 'attention';
 let deploymentPage = 1;
 let deploymentPageSize = 25;
 let selectedAccessUserEmail = '';
+let accessUserSearch = '';
 let acknowledgedAlerts = {};
 let alertHistory = [];
 let alertHistoryReport = { windows: { '7d': {}, '30d': {} }, retained_events: 0, collecting: true };
@@ -165,9 +166,9 @@ const command = (label, value, note = '') => `<div class="command-card"><div><st
 // These are deliberately global because summary cards and the floating
 // Intelligence assistant can be opened from outside the main workspace setup.
 function pageFromTarget(targetId) {
-  const page = targetId === 'operations' || targetId === 'observability-center' ? 'overview' : targetId === 'workloads' || targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'pod-logs' || targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'elastic-watch' ? 'elastic-watch' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access' || targetId === 'access-center' ? 'access' : targetId === 'intelligence' || targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alerts' || targetId === 'alert-center' ? 'alerts' : 'overview';
+  const page = targetId === 'operations' || targetId === 'observability-center' ? 'overview' : targetId === 'workloads' || targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'pod-logs' || targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access' || targetId === 'access-center' ? 'access' : targetId === 'intelligence' || targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alerts' || targetId === 'alert-center' ? 'alerts' : 'overview';
   if ((page === 'access' || page === 'data-sources') && !isAdministrator()) return 'overview';
-  if ((page === 'logs' || page === 'operations' || page === 'elastic-watch') && !isDeveloperOrAdministrator()) return 'overview';
+  if ((page === 'logs' || page === 'operations') && !isDeveloperOrAdministrator()) return 'overview';
   return page;
 }
 
@@ -205,90 +206,6 @@ function renderOperatingContext(snapshot) {
     observabilityMinutes = Number(event.target.value);
     load();
   });
-}
-
-const elasticWatchSections = [
-  ['overview', 'Overview'], ['filebeat-logs', 'Filebeat logs'], ['nodes', 'Nodes'], ['indices-shards', 'Indices & shards'],
-  ['pending-tasks', 'Pending tasks'], ['allocation', 'Allocation'], ['performance', 'Performance'],
-  ['lifecycle', 'Lifecycle'], ['backups', 'Backups'], ['recoveries', 'Recoveries'],
-  ['hot-threads', 'Hot threads'], ['alerts-incidents', 'Alerts & incidents'],
-];
-let elasticWatchSection = 'overview';
-
-function elasticWatchValue(value) {
-  if (value == null || value === '') return '—';
-  if (typeof value === 'object') return escapeHtml(JSON.stringify(value).slice(0, 220));
-  return escapeHtml(String(value));
-}
-
-function elasticWatchTabs() {
-  return `<div class="elastic-watch-tabs" role="tablist" aria-label="Elastic Watch areas">${elasticWatchSections.map(([key, label]) => `<button type="button" role="tab" aria-selected="${key === elasticWatchSection}" class="${key === elasticWatchSection ? 'active' : ''}" data-elastic-watch-section="${key}">${label}</button>`).join('')}</div>`;
-}
-
-function renderElasticWatchTable(rows) {
-  if (!rows.length) return '<div class="elastic-watch-empty"><strong>No current records</strong><p>Elastic Watch did not return any records for this area.</p></div>';
-  const columns = [...new Set(rows.flatMap(item => Object.keys(item || {})))].filter(key => !['raw', 'id'].includes(key)).slice(0, 7);
-  return `<div class="table-wrap"><table class="elastic-watch-table"><thead><tr>${columns.map(key => `<th>${escapeHtml(key.replaceAll('_', ' '))}</th>`).join('')}</tr></thead><tbody>${rows.slice(0, 100).map(item => `<tr>${columns.map(key => `<td>${elasticWatchValue(item?.[key])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
-}
-
-function renderElasticWatchPayload(payload) {
-  if (elasticWatchSection === 'indices-shards') return `<section class="elastic-watch-card"><div class="panel-title"><div><p class="eyebrow">INDEX HEALTH</p><h2>Indices</h2></div></div>${renderElasticWatchTable(payload.indices || [])}</section><section class="elastic-watch-card"><div class="panel-title"><div><p class="eyebrow">SHARD PLACEMENT</p><h2>Shards</h2></div></div>${renderElasticWatchTable(payload.shards || [])}</section>`;
-  if (elasticWatchSection === 'alerts-incidents') return `<section class="elastic-watch-card"><div class="panel-title"><div><p class="eyebrow">ACTIVE ELASTIC ALERTS</p><h2>Current cluster signals</h2></div></div>${renderElasticWatchTable(payload.overview?.alerts || [])}</section><section class="elastic-watch-card"><div class="panel-title"><div><p class="eyebrow">ELASTIC ALERT RULES</p><h2>Configured thresholds</h2></div></div>${renderElasticWatchTable(payload.rules || [])}</section>`;
-  if (elasticWatchSection === 'filebeat-logs') {
-    const logs = payload.logs || [];
-    return `<section class="elastic-watch-card"><div class="panel-title"><div><p class="eyebrow">FILEBEAT LOGS</p><h2>Recent indexed evidence</h2></div><span class="muted">${logs.length} retained records</span></div><div class="elastic-watch-log-list">${logs.length ? logs.slice(-100).reverse().map(log => `<article class="elastic-watch-log"><span class="status ${/error|fatal|critical/i.test(log.level) ? 'critical' : /warn/i.test(log.level) ? 'warning' : 'healthy'}">${escapeHtml(log.level || 'info')}</span><div><b>${escapeHtml(log.service || log.host || 'Unknown service')}</b><p>${escapeHtml(log.message || 'No message')}</p></div><small>${escapeHtml(log.timestamp || 'Time unavailable')}</small></article>`).join('') : '<div class="elastic-watch-empty"><strong>No Filebeat logs retained yet</strong><p>Once ElasticWatch receives indexed documents, recent evidence will appear here.</p></div>'}</div></section>`;
-  }
-  if (elasticWatchSection === 'overview') {
-    const cluster = payload.cluster || {};
-    const summary = payload.summary || {};
-    const capacity = payload.capacity || {};
-    const cards = [
-      ['Cluster health', cluster.status || 'Unknown', cluster.cluster_name || 'Cluster state'],
-      ['Nodes', cluster.nodes ?? '—', `Version ${cluster.version || 'unknown'}`],
-      ['Errors', summary.errors ?? 0, `${summary.warnings ?? 0} warnings`],
-      ['Disk used', capacity.disk_percent == null ? '—' : `${capacity.disk_percent}%`, `${capacity.disk_available_gib ?? '—'} GiB available`],
-      ['JVM heap', capacity.heap_percent == null ? '—' : `${capacity.heap_percent}%`, `CPU ${capacity.node_cpu_percent ?? '—'}%`],
-    ];
-    const logs = payload.logs || [];
-    return `<div class="elastic-watch-summary">${cards.map(([label, value, helper]) => `<article><span>${label}</span><strong>${elasticWatchValue(value)}</strong><small>${elasticWatchValue(helper)}</small></article>`).join('')}</div><section class="elastic-watch-card"><div class="panel-title"><div><p class="eyebrow">FILEBEAT LOGS</p><h2>Recent indexed evidence</h2></div><span class="muted">${logs.length} retained records</span></div><div class="elastic-watch-log-list">${logs.length ? logs.slice(-30).reverse().map(log => `<article class="elastic-watch-log"><span class="status ${/error|fatal|critical/i.test(log.level) ? 'critical' : /warn/i.test(log.level) ? 'warning' : 'healthy'}">${escapeHtml(log.level || 'info')}</span><div><b>${escapeHtml(log.service || log.host || 'Unknown service')}</b><p>${escapeHtml(log.message || 'No message')}</p></div><small>${escapeHtml(log.timestamp || 'Time unavailable')}</small></article>`).join('') : '<div class="elastic-watch-empty"><strong>No Filebeat logs retained yet</strong><p>Once ElasticWatch receives indexed documents, recent evidence will appear here.</p></div>'}</div></section>`;
-  }
-  if (Array.isArray(payload)) return `<div class="elastic-watch-detail">${renderElasticWatchTable(payload)}</div>`;
-  return `<div class="elastic-watch-detail"><dl class="elastic-watch-definition">${Object.entries(payload || {}).map(([key, value]) => `<div><dt>${escapeHtml(key.replaceAll('_', ' '))}</dt><dd>${elasticWatchValue(value)}</dd></div>`).join('')}</dl></div>`;
-}
-
-async function loadElasticWatch(section = elasticWatchSection) {
-  elasticWatchSection = section;
-  const target = document.querySelector('#elastic-watch-content');
-  const connection = document.querySelector('#elastic-watch-connection');
-  if (!target || !connection) return;
-  target.innerHTML = `${elasticWatchTabs()}<div class="elastic-watch-empty"><strong>Loading ${elasticWatchSections.find(([key]) => key === section)?.[1] || 'Elastic Watch'}…</strong></div>`;
-  try {
-    const statusResponse = await fetch('/api/elasticwatch/status');
-    const status = await statusResponse.json();
-    if (!statusResponse.ok) throw new Error(status.detail || 'Elastic Watch status is unavailable.');
-    if (!status.enabled) {
-      connection.textContent = 'Not connected';
-      target.innerHTML = `${elasticWatchTabs()}<div class="elastic-watch-empty"><strong>Elastic Watch is not connected yet</strong><p>Deploy the internal ElasticWatch service, then enable its approved service connection in the PulseOps Helm values. No Elasticsearch or API credential is stored in this browser.</p></div>`;
-      bindElasticWatchTabs();
-      return;
-    }
-    const endpoints = section === 'indices-shards' ? ['indices', 'shards'] : section === 'alerts-incidents' ? ['overview', 'alert-rules'] : [section];
-    const responses = await Promise.all(endpoints.map(endpoint => fetch(`/api/elasticwatch/${encodeURIComponent(endpoint)}`)));
-    const payloads = await Promise.all(responses.map(response => response.json()));
-    const failed = responses.findIndex(response => !response.ok);
-    if (failed >= 0) throw new Error(payloads[failed].detail || 'Elastic Watch did not return data.');
-    const payload = section === 'indices-shards' ? { indices: payloads[0], shards: payloads[1] } : section === 'alerts-incidents' ? { overview: payloads[0], rules: payloads[1] } : payloads[0];
-    connection.textContent = 'Connected · read-only data';
-    target.innerHTML = `${elasticWatchTabs()}${renderElasticWatchPayload(payload)}`;
-  } catch (error) {
-    connection.textContent = 'Unavailable';
-    target.innerHTML = `${elasticWatchTabs()}<div class="elastic-watch-empty"><strong>Elastic Watch is unavailable</strong><p>${escapeHtml(error.message)}</p></div>`;
-  }
-  bindElasticWatchTabs();
-}
-
-function bindElasticWatchTabs() {
-  document.querySelectorAll('[data-elastic-watch-section]').forEach(button => button.addEventListener('click', () => loadElasticWatch(button.dataset.elasticWatchSection)));
 }
 
 function urlHistorySamples(monitor) {
@@ -1751,18 +1668,22 @@ function renderAccessUsers(users) {
   const target = document.querySelector('#access-users');
   if (!target) return;
   const role = target.querySelector('#user-role-filter')?.value || 'all';
-  const filtered = users.filter(user => role === 'all' || user.role === role).sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
-  const rows = filtered.map(user => `<tr class="${user.enabled === false ? 'user-disabled' : ''}"><td><input type="checkbox" data-user-select="${escapeHtml(user.email)}" ${selectedAccessUserEmail === user.email ? 'checked' : ''} aria-label="Select ${escapeHtml(user.name)}"></td><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(roleLabel(user.role))}</td><td><span class="${severityClass(user.enabled === false ? 'critical' : 'healthy')}">${user.enabled === false ? 'Disabled' : 'Active'}</span></td><td>${user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'}</td></tr>`).join('');
-  target.innerHTML = `<div class="inventory-controls"><label>Role <select id="user-role-filter"><option value="all" ${role === 'all' ? 'selected' : ''}>All roles</option><option value="administrator" ${role === 'administrator' ? 'selected' : ''}>Administrators</option><option value="developer" ${role === 'developer' ? 'selected' : ''}>Developers / Operators</option><option value="readonly" ${role === 'readonly' ? 'selected' : ''}>Read-only</option></select></label><button id="open-selected-user" ${selectedAccessUserEmail ? '' : 'disabled'}>Open selected profile</button><button id="export-users">Export CSV</button></div><div class="table-wrap"><table><thead><tr><th>Select</th><th>Name</th><th>Login</th><th>Role</th><th>Access</th><th>Created</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No matching users.</td></tr>'}</tbody></table></div>`;
+  const search = accessUserSearch.trim().toLowerCase();
+  const filtered = users.filter(user => (role === 'all' || user.role === role) && (!search || `${user.name || ''} ${user.email || ''}`.toLowerCase().includes(search))).sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+  const active = users.filter(user => user.enabled !== false).length;
+  const administrators = users.filter(user => user.role === 'administrator').length;
+  const disabled = users.filter(user => user.enabled === false).length;
+  const rows = filtered.map(user => `<tr class="${user.enabled === false ? 'user-disabled' : ''}"><td><strong>${escapeHtml(user.name)}</strong></td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(roleLabel(user.role))}</td><td><span class="${severityClass(user.enabled === false ? 'critical' : 'healthy')}">${user.enabled === false ? 'Disabled' : 'Active'}</span></td><td>${user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'}</td><td class="user-actions"><button type="button" data-user-manage="${escapeHtml(user.email)}">Manage</button></td></tr>`).join('');
+  target.innerHTML = `<div class="access-summary"><article><span>Total accounts</span><strong>${users.length}</strong><small>Local access records</small></article><article><span>Active users</span><strong>${active}</strong><small>Can sign in now</small></article><article><span>Administrators</span><strong>${administrators}</strong><small>Manage access and sources</small></article><article><span>Disabled</span><strong>${disabled}</strong><small>Retained for audit</small></article></div><div class="inventory-controls access-controls"><label class="access-search"><span>Find user</span><input id="access-user-search" value="${escapeHtml(accessUserSearch)}" placeholder="Name or login"></label><label>Role <select id="user-role-filter"><option value="all" ${role === 'all' ? 'selected' : ''}>All roles</option><option value="administrator" ${role === 'administrator' ? 'selected' : ''}>Administrators</option><option value="developer" ${role === 'developer' ? 'selected' : ''}>Developers / Operators</option><option value="readonly" ${role === 'readonly' ? 'selected' : ''}>Read-only</option></select></label><span class="access-result-count">${filtered.length} shown</span><button id="export-users">Export displayed list</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Login</th><th>Role</th><th>Access</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows || '<tr><td colspan="6">No matching users.</td></tr>'}</tbody></table></div>`;
   target.querySelector('#user-role-filter').addEventListener('change', () => renderAccessUsers(users));
+  target.querySelector('#access-user-search').addEventListener('input', event => { accessUserSearch = event.target.value; renderAccessUsers(users); });
   target.querySelector('#export-users').addEventListener('click', () => {
     const csv = ['Name,Login,Role,Access,Source,Created', ...filtered.map(user => [user.name, user.email, user.role, user.enabled === false ? 'Disabled' : 'Active', user.source, user.created_at].map(value => `"${String(value || '').replaceAll('"', '""')}"`).join(','))].join('\n');
     const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })), download: `l1controlscope-users-${new Date().toISOString().slice(0, 10)}.csv` });
     link.click();
     URL.revokeObjectURL(link.href);
   });
-  target.querySelectorAll('[data-user-select]').forEach(select => select.addEventListener('change', () => { selectedAccessUserEmail = select.checked ? select.dataset.userSelect : ''; renderAccessUsers(users); }));
-  target.querySelector('#open-selected-user').addEventListener('click', () => showUserProfile(selectedAccessUserEmail));
+  target.querySelectorAll('[data-user-manage]').forEach(button => button.addEventListener('click', () => showUserProfile(button.dataset.userManage)));
 }
 
 function renderUserProfile(user) {
@@ -2009,7 +1930,7 @@ async function load(preservePausedLogs = false) {
 
 function startPulseOps() {
 ensureDeveloperInvestigationPage();
-const navigationHelp = { '#overview': 'Live health, trends, capacity, dependencies, and recent changes', '#deployment-readiness': 'Deployments, services, pods, images, and readiness', '#log-explorer-panel': 'Search and inspect retained pod logs', '#alert-center': 'Active alerts, history, evidence, and rules', '#developer-investigation': 'Correlated developer investigation workspace', '#intelligence-center': 'Evidence-led automated investigation and optional AI', '#url-monitoring': 'Environment URL availability monitoring', '#elastic-watch': 'Elasticsearch cluster health and Filebeat evidence', '#data-sources': 'Administrator monitoring-source configuration', '#access-center': 'Administrator users, roles, and audit history' };
+const navigationHelp = { '#overview': 'Live health, trends, capacity, dependencies, and recent changes', '#deployment-readiness': 'Deployments, services, pods, images, and readiness', '#log-explorer-panel': 'Search and inspect retained pod logs', '#alert-center': 'Active alerts, history, evidence, and rules', '#developer-investigation': 'Correlated developer investigation workspace', '#intelligence-center': 'Evidence-led automated investigation and optional AI', '#url-monitoring': 'Environment URL availability monitoring', '#data-sources': 'Administrator monitoring-source configuration', '#access-center': 'Administrator users, roles, and audit history' };
 document.querySelectorAll('.workspace-nav a').forEach(link => { link.title = navigationHelp[link.getAttribute('href')] || link.textContent.trim(); });
 document.querySelector('#refresh').addEventListener('click', load);
 function applyTheme(theme) {
@@ -2052,7 +1973,6 @@ if (!isDeveloperOrAdministrator()) {
   document.querySelector('a[href="#log-explorer-panel"]').hidden = true;
   document.querySelector('a[href="#observability-center"]')?.setAttribute('hidden', '');
   document.querySelector('a[href="#url-monitoring"]').hidden = true;
-  document.querySelector('.elastic-watch-nav').hidden = true;
 }
 document.querySelector('#url-monitor-refresh').addEventListener('click', loadUrlMonitors);
 document.querySelector('#url-monitor-search').addEventListener('input', event => { urlMonitorSearch = event.target.value; renderUrlMonitors(); });
@@ -2093,22 +2013,28 @@ document.body.dataset.audience = 'operator';
 
 function setWorkspacePage(page) {
   document.body.dataset.page = page;
-  if (page === 'elastic-watch') loadElasticWatch();
   // Service Map and Dependency Health live inside Command Center only.
   // This explicit guard keeps them out of every focused workspace page.
   const commandCenter = document.querySelector('#observability-center');
   if (commandCenter) commandCenter.hidden = page !== 'overview';
   document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab => {
     const targetId = (tab.getAttribute('href') || '#overview').slice(1);
-    const elasticChild = tab.dataset.elasticWatchOpen;
-    const selected = pageFromTarget(targetId) === page && !(page === 'overview' && targetId !== 'overview') && !(page === 'elastic-watch' && elasticChild && elasticChild !== elasticWatchSection);
+    const selected = pageFromTarget(targetId) === page && !(page === 'overview' && targetId !== 'overview');
     tab.classList.toggle('active', selected);
     if (selected) tab.setAttribute('aria-current', 'page'); else tab.removeAttribute('aria-current');
   });
 }
 
 function syncWorkspacePage() {
-  const page = pageFromTarget((window.location.hash || '#overview').slice(1));
+  const targetId = (window.location.hash || '#overview').slice(1);
+  const page = pageFromTarget(targetId);
+  // Elastic Watch has been removed from L1ControlScope. Canonicalise any old
+  // bookmark so the address bar does not imply that the feature still exists.
+  if (targetId === 'elastic-watch') {
+    const url = new URL(window.location.href);
+    url.hash = '#overview';
+    window.history.replaceState(null, '', url);
+  }
   // A shared investigation link needs its identifier only while the
   // investigation workspace is open. Keep every other application URL clean.
   if (page !== 'investigation') {
@@ -2124,10 +2050,6 @@ function syncWorkspacePage() {
 document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab => tab.addEventListener('click', event => {
   event.preventDefault();
   const hash = tab.getAttribute('href') || '#overview';
-  if (tab.dataset.elasticWatchOpen) {
-    elasticWatchSection = tab.dataset.elasticWatchOpen;
-    document.querySelector('.elastic-watch-nav').open = true;
-  }
   const url = new URL(window.location.href);
   url.searchParams.delete('investigation');
   url.hash = hash;
