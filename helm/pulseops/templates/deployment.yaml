@@ -132,7 +132,11 @@ spec:
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /ready
+              # The dashboard must stay reachable even when a downstream
+              # telemetry source is temporarily unavailable. /ready reports
+              # that telemetry condition to the UI, while /health confirms
+              # this web process can safely receive traffic.
+              path: /health
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
