@@ -1223,7 +1223,7 @@ function podLogEvidenceHtml() {
   const podName = logExplorerPodName;
   const deployment = (data?.deployments || []).find(item => (item.resources || []).some(resource => resource.pod?.name === podName));
   const nativeEvents = (data?.pod_events || []).filter(event => event.pod === podName).map(event => ({ ...event, title: event.reason || 'Kubernetes event', detail: event.message || '', timestamp: event.timestamp, sourceLabel: 'Kubernetes' }));
-  const observedEvents = (observabilityData?.events || []).filter(event => event.pod === podName || event.workload === deployment?.name).map(event => ({ ...event, title: event.title || 'Runtime event', detail: event.detail || '', timestamp: event.timestamp ? new Date(Number(event.timestamp) * 1000).toISOString() : null, sourceLabel: 'PulseOps observed' }));
+  const observedEvents = (observabilityData?.events || []).filter(event => event.pod === podName || event.workload === deployment?.name).map(event => ({ ...event, title: event.title || 'Runtime event', detail: event.detail || '', timestamp: event.timestamp ? new Date(Number(event.timestamp) * 1000).toISOString() : null, sourceLabel: 'Monitoring signal' }));
   const byIdentity = new Map();
   [...nativeEvents, ...observedEvents].forEach(event => {
     const identity = `${event.sourceLabel}|${event.title}|${event.detail}|${event.timestamp || ''}`;
