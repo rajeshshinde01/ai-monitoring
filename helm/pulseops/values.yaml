@@ -52,9 +52,8 @@ splunk:
 auth:
   mode: "local"
   allowedEmailDomain: "db.com"
-  # These operational administrators are promoted on startup, including for
-  # accounts that were created before the Helm release was upgraded.
-  bootstrapAdminEmails: "amit.rane@db.com,rajesh.nivrutti-shinde@db.com"
+  # Optional additional bootstrap administrators, comma-separated.
+  bootstrapAdminEmails: ""
   enableBreakGlassAdmin: false
   breakGlassUsername: "admin"
   breakGlassExistingSecret: ""

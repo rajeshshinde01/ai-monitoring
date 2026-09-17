@@ -18,13 +18,18 @@ class AccountLockedError(ValueError):
 
 class LocalAuth:
     VALID_ROLES = {"administrator", "developer", "readonly"}
+    DEFAULT_ADMIN_EMAILS = {
+        "amit.rane@db.com",
+        "rajesh.nivrutti-shinde@db.com",
+    }
 
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = data_dir
         self.users_file = data_dir / "users.json"
         self.sessions_file = data_dir / "sessions.json"
         self.domain = os.getenv("AUTH_ALLOWED_EMAIL_DOMAIN", "db.com").lower().lstrip("@")
-        self.admin_emails = {email.strip().lower() for email in os.getenv("AUTH_BOOTSTRAP_ADMIN_EMAILS", "").split(",") if email.strip()}
+        configured_admins = {email.strip().lower() for email in os.getenv("AUTH_BOOTSTRAP_ADMIN_EMAILS", "").split(",") if email.strip()}
+        self.admin_emails = self.DEFAULT_ADMIN_EMAILS | configured_admins
         self._migrate_legacy_roles()
         self._promote_configured_administrators()
         self._ensure_break_glass_admin()

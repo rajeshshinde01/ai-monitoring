@@ -2,7 +2,7 @@
 
 Python-based observability dashboard for local Docker, Kubernetes, and OpenShift. It provides workload health, CPU and memory utilisation, restart counts, log pattern analysis, configurable alert rules, alert history, and a safe path to resource forecasting.
 
-L1ControlScope includes local password sign-in for approved-domain users. Configure initial administrator email addresses with `AUTH_BOOTSTRAP_ADMIN_EMAILS`; the signed-in name and role appear in the dashboard header.
+L1ControlScope includes local password sign-in for approved-domain users. The designated operational administrators are included by the application; `AUTH_BOOTSTRAP_ADMIN_EMAILS` can add further administrators when needed. The signed-in name and role appear in the dashboard header.
 
 ## Complete operations guide
 
@@ -108,7 +108,7 @@ For several namespaces, apply one copy of this Role and RoleBinding in each name
 
 ## Authentication configuration
 
-L1ControlScope supports local sign-in with three roles: **Administrator** (configuration, alerts, users, and audit history), **Developer / Operator** (telemetry, logs, and intelligence), and **Read-only** (safe operational visibility). Bootstrap administrator emails are supplied through `AUTH_BOOTSTRAP_ADMIN_EMAILS` as a comma-separated deployment value; do not commit employee email lists or credentials to source control. Only administrators can change settings or alert rules.
+L1ControlScope supports local sign-in with three roles: **Administrator** (configuration, alerts, users, and audit history), **Developer / Operator** (telemetry, logs, and intelligence), and **Read-only** (safe operational visibility). The designated operational administrators are promoted by the application; `AUTH_BOOTSTRAP_ADMIN_EMAILS` can add further administrators as a comma-separated deployment value. Only administrators can change settings or alert rules.
 
 Local accounts lock for **30 minutes** after five failed sign-in attempts by default. An administrator can unlock an account in **Access → Users and roles**. Change these defaults only when required using `AUTH_MAX_LOGIN_ATTEMPTS` and `AUTH_LOCKOUT_MINUTES`. Access changes, alert-rule changes, and data-source/AI setting changes are recorded in **Audit history**; passwords, tokens, and client secrets are never recorded.
 
