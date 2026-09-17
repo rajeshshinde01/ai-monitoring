@@ -1994,7 +1994,7 @@ async function load(preservePausedLogs = false) {
 
 function startPulseOps() {
 ensureDeveloperInvestigationPage();
-const navigationHelp = { '#overview': 'Live health, trends, capacity, dependencies, and recent changes', '#deployment-readiness': 'Deployments, services, pods, images, and readiness', '#log-explorer-panel': 'Search and inspect retained pod logs', '#alert-center': 'Active alerts, history, evidence, and rules', '#developer-investigation': 'Correlated developer investigation workspace', '#intelligence-center': 'Evidence-led automated investigation and optional AI', '#url-monitoring': 'Environment URL availability monitoring', '#data-sources': 'Administrator monitoring-source configuration', '#access-center': 'Administrator users, roles, and audit history' };
+const navigationHelp = { '#overview': 'Live health, trends, capacity, dependencies, and recent changes', '#deployment-readiness': 'Deployments, services, pods, images, and readiness', '#log-explorer-panel': 'Search and inspect retained pod logs', '#alert-center': 'Active alerts, history, evidence, and rules', '#developer-investigation': 'Correlated developer investigation workspace', '#intelligence-center': 'Evidence-led automated investigation and optional AI', '#url-monitoring': 'Environment URL availability monitoring', '#data-sources': 'Administrator monitoring-source configuration', '#access': 'Administrator users, roles, and audit history' };
 document.querySelectorAll('.workspace-nav a').forEach(link => { link.title = navigationHelp[link.getAttribute('href')] || link.textContent.trim(); });
 document.querySelector('#refresh').addEventListener('click', load);
 function applyTheme(theme) {
@@ -2030,8 +2030,7 @@ document.querySelector('#assistant-runtime-open').addEventListener('click', () =
   if (assistantRuntimeOpen) loadAssistantRuntime().then(() => renderAssistant());
 });
 if (!isAdministrator()) document.querySelector('#assistant-runtime-open').hidden = true;
-if (!isAdministrator()) document.querySelector('#access-nav').hidden = true;
-if (!isAdministrator()) document.querySelector('a[href="#data-sources"]').hidden = true;
+document.querySelector('#administration-nav').hidden = !isAdministrator();
 if (!isAdministrator()) document.querySelector('#export-json').hidden = true;
 if (!isDeveloperOrAdministrator()) {
   document.querySelector('a[href="#log-explorer-panel"]').hidden = true;
