@@ -605,13 +605,20 @@ class ClusterClient:
             for item, kind in [*( (entry, "Deployment") for entry in deployments), *((entry, "StatefulSet") for entry in statefulsets)]:
                 desired = item.spec.replicas or 0
                 available = (item.status.available_replicas or 0) if kind == "Deployment" else (item.status.ready_replicas or 0)
+                # The Kubernetes API exposes a slightly different status
+                # shape for StatefulSets. In particular, unavailable_replicas
+                # is commonly absent, so never let one StatefulSet hide the
+                # complete deployment inventory.
+                updated = getattr(item.status, "updated_replicas", 0) or 0
+                unavailable = getattr(item.status, "unavailable_replicas", None)
+                unavailable = max(desired - available, 0) if unavailable is None else unavailable
                 images = ", ".join(container.image for container in item.spec.template.spec.containers)
                 labels = dict(item.spec.template.metadata.labels or {})
                 related = related_services(labels)
                 conditions = [{"type": condition.type, "status": condition.status, "reason": condition.reason or "", "message": condition.message or ""} for condition in (item.status.conditions or [])]
                 progress = next((condition for condition in (item.status.conditions or []) if condition.type == "Progressing"), None)
                 deployed_at = getattr(progress, "last_update_time", None) or getattr(progress, "last_transition_time", None) or item.metadata.creation_timestamp
-                workloads.append({"name": item.metadata.name, "type": kind, "desired": desired, "available": available, "updated": item.status.updated_replicas or 0, "unavailable": item.status.unavailable_replicas or 0, "exposed": any(service["type"] in {"LoadBalancer", "NodePort"} for service in related), "image": images or "Not available", "status": "Ready" if available >= desired else "Degraded", "services": related, "routes": sorted({route for service in related for route in service.get("routes", [])}), "deployed_at": deployed_at.isoformat() if deployed_at else "", "revision": (item.metadata.annotations or {}).get("deployment.kubernetes.io/revision", ""), "containers": safe_containers(item.spec.template.spec.containers), "configuration_references": safe_volumes(item.spec.template.spec.volumes), "service_account": item.spec.template.spec.service_account_name or "default", "conditions": conditions, "labels": labels, "strategy": getattr(getattr(item.spec, "strategy", None), "type", None) or ("RollingUpdate" if kind == "Deployment" else "OrderedReady")})
+                workloads.append({"name": item.metadata.name, "type": kind, "desired": desired, "available": available, "updated": updated, "unavailable": unavailable, "exposed": any(service["type"] in {"LoadBalancer", "NodePort"} for service in related), "image": images or "Not available", "status": "Ready" if available >= desired else "Degraded", "services": related, "routes": sorted({route for service in related for route in service.get("routes", [])}), "deployed_at": deployed_at.isoformat() if deployed_at else "", "revision": (item.metadata.annotations or {}).get("deployment.kubernetes.io/revision", ""), "containers": safe_containers(item.spec.template.spec.containers), "configuration_references": safe_volumes(item.spec.template.spec.volumes), "service_account": item.spec.template.spec.service_account_name or "default", "conditions": conditions, "labels": labels, "strategy": getattr(getattr(item.spec, "strategy", None), "type", None) or ("RollingUpdate" if kind == "Deployment" else "OrderedReady")})
             running = sum(pod.status == "Running" for pod in pods)
             return {
                 "workloads": sorted(workloads, key=lambda item: item["name"]),
