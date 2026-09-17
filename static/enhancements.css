@@ -228,6 +228,9 @@ body:not([data-page="service-health"]) .page-service-health { display:none!impor
 .service-health-summary strong { color:#1e3855; font-size:1.35rem; line-height:1.15; }
 .service-health-summary small { color:#718198; font-size:.68rem; line-height:1.45; }
 .service-health-summary em { color:#4266c6; font-size:.64rem; font-style:normal; font-weight:800; }
+
+/* Intelligence overview only makes cards interactive when an action exists. */
+.correlation-overview>button{display:grid;gap:3px;padding:15px 18px;border:0;border-right:1px solid #dce5f1;color:inherit;background:transparent;cursor:pointer;font:inherit;text-align:left}.correlation-overview>button:hover{background:#edf4ff}.correlation-overview>button.correlation-assessment.attention{background:#fff9ed}.correlation-overview>button.correlation-assessment.attention:hover{background:#fff3d6}.correlation-overview>button em{color:#4266c6;font-size:.64rem;font-style:normal;font-weight:800}.pulseops-workspace[data-theme="dark"] .correlation-overview>button{border-color:#263d5d}.pulseops-workspace[data-theme="dark"] .correlation-overview>button:hover{background:#142b47}.pulseops-workspace[data-theme="dark"] .correlation-overview>button.correlation-assessment.attention,.pulseops-workspace[data-theme="dark"] .correlation-overview>button.correlation-assessment.attention:hover{background:#2d2415}.pulseops-workspace[data-theme="dark"] .correlation-overview>button em{color:#bcd5ff}
 .service-health-explainer { display:flex; align-items:center; gap:12px; padding:12px 14px; border:1px solid #dce5ef; border-radius:10px; background:#f8fbff; }
 .service-health-explainer p { margin:0; color:#5d7087; font-size:.74rem; line-height:1.5; }
 .service-health-explainer strong { color:#344c67; }
