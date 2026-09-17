@@ -160,7 +160,7 @@
 .capacity-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:5px; margin:8px 0; }
 .capacity-metrics span { min-width:0; padding:5px 6px; border-radius:6px; color:#76859d; background:#eef3fa; font-size:.6rem; text-align:left; }
 .capacity-metrics b { display:block; margin-top:2px; color:#33425f; font-size:.71rem; }
-.dependency-row strong { display:block; margin-bottom:3px; }
+.dependency-row strong { display:block; margin-bottom:3px; }.dependency-row{cursor:pointer}.dependency-row:hover,.dependency-row.active{border-color:#aabceb;background:#f2f6ff}.dependency-summary>.status{justify-self:start}.dependency-open-logs{padding:8px 9px;border:1px solid #b9caef;border-radius:7px;color:#3159b9;background:#f5f8ff;font-size:.7rem;font-weight:800}.pulseops-workspace[data-theme="dark"] .dependency-row:hover,.pulseops-workspace[data-theme="dark"] .dependency-row.active{border-color:#4d6498;background:#142743}.pulseops-workspace[data-theme="dark"] .dependency-open-logs{border-color:#3d5280;color:#cbdcff;background:#172b4b}
 .dependency-row small { display:block; line-height:1.35; }
 .dependency-layout { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(190px,.65fr); gap:11px; }
 .dependency-summary { display:grid; align-content:start; gap:8px; padding:12px; border:1px solid #dce5f2; border-radius:10px; background:linear-gradient(145deg,#f8faff,#f0f5ff); }
