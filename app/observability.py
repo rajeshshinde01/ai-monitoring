@@ -270,10 +270,29 @@ class ClusterClient:
 
             self._configure()
             core = client.CoreV1Api()
-            return {
-                pod.name: core.read_namespaced_pod_log(name=pod.name, namespace=pod.namespace, tail_lines=self.log_tail_lines, timestamps=True).splitlines()
-                for pod in pods
-            }
+            # A Pending pod, init container, or a container that has not yet
+            # started returns a 400 from the pod-log API. That is normal during
+            # rollout and must not prevent inventory, health, and logs from
+            # every other running pod from being collected.
+            result: dict[str, list[str]] = {}
+            failures = 0
+            for pod in pods:
+                try:
+                    result[pod.name] = core.read_namespaced_pod_log(
+                        name=pod.name,
+                        namespace=pod.namespace,
+                        tail_lines=self.log_tail_lines,
+                        timestamps=True,
+                    ).splitlines()
+                except Exception:
+                    failures += 1
+                    result[pod.name] = []
+            if failures == len(pods) and pods:
+                try:
+                    return self._splunk_logs(pods)
+                except Exception:
+                    pass
+            return result
         except Exception as error:
             try:
                 return self._splunk_logs(pods)
