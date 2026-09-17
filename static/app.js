@@ -628,10 +628,10 @@ function renderOverviewFocus(overview, report) {
   const event = events[0];
   const cards = [
     { label: 'Alerts', value: alert ? `${alert.severity} alert` : 'No active alerts', detail: alert ? alert.message : 'No immediate action is required.', page: 'alerts', hash: '#alert-center', status: alert?.severity || 'healthy' },
-    { label: 'Resource watch', value: highest ? `${percent(highest.forecast_percent)} expected use` : 'No forecast yet', detail: highest ? highest.pod : 'Collecting resource history.', page: 'overview', hash: '#observability-center', status: highest?.risk || 'healthy' },
-    { label: 'Latest activity', value: event?.title || 'No recent changes', detail: event?.detail || 'No workload or alert changes in the current window.', page: 'overview', hash: '#observability-center', status: event?.severity || 'healthy' },
+    { label: 'Resource watch', value: highest ? `${percent(highest.forecast_percent)} expected use` : 'No forecast yet', detail: highest ? highest.pod : 'Collecting resource history.', page: 'intelligence', hash: '#intelligence', action: 'Open capacity analysis →', status: highest?.risk || 'healthy' },
+    { label: 'Latest activity', value: event?.title || 'No recent changes', detail: event?.detail || 'No workload or alert changes in the current window.', page: 'workloads', hash: '#workloads', action: 'Open workload activity →', status: event?.severity || 'healthy' },
   ];
-  document.querySelector('#overview-focus-content').innerHTML = cards.map(card => `<button class="overview-focus-card" data-overview-page="${card.page}" data-overview-hash="${card.hash}"><span class="${severityClass(card.status)}">${escapeHtml(card.label)}</span><strong>${escapeHtml(card.value)}</strong><small>${escapeHtml(card.detail)}</small><em>Open details →</em></button>`).join('');
+  document.querySelector('#overview-focus-content').innerHTML = cards.map(card => `<button class="overview-focus-card" data-overview-page="${card.page}" data-overview-hash="${card.hash}"><span class="${severityClass(card.status)}">${escapeHtml(card.label)}</span><strong>${escapeHtml(card.value)}</strong><small>${escapeHtml(card.detail)}</small><em>${escapeHtml(card.action || 'Open details →')}</em></button>`).join('');
   document.querySelectorAll('[data-overview-page]').forEach(button => button.addEventListener('click', () => {
     window.history.replaceState(null, '', button.dataset.overviewHash);
     setWorkspacePage(button.dataset.overviewPage);
