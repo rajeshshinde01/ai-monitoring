@@ -1106,9 +1106,16 @@ def _telemetry_readiness() -> tuple[bool, dict]:
             age_seconds = max(0, round((datetime.now(timezone.utc) - collected_at).total_seconds()))
         except ValueError:
             pass
-    healthy = bool(status.get("running")) and not status.get("error") and age_seconds is not None and age_seconds <= maximum_age
-    return healthy, {
-        "status": "ready" if healthy else "degraded",
+    telemetry_ready = bool(status.get("running")) and not status.get("error") and age_seconds is not None and age_seconds <= maximum_age
+    # Serving the dashboard and collecting telemetry are separate concerns.
+    # The dashboard must remain reachable to show a useful, actionable
+    # collection error instead of being removed from the Service endpoints.
+    # Keep the telemetry state in the payload for the UI, but use a successful
+    # readiness response whenever the collector process itself is running.
+    application_ready = bool(status.get("running"))
+    return application_ready, {
+        "status": "ready" if telemetry_ready else "degraded",
+        "telemetry_ready": telemetry_ready,
         "service": "pulseops-ai",
         "collector": {**status, "age_seconds": age_seconds, "stale_after_seconds": maximum_age},
     }
@@ -1116,9 +1123,9 @@ def _telemetry_readiness() -> tuple[bool, dict]:
 
 @app.get("/ready")
 def ready() -> JSONResponse:
-    """Readiness endpoint: only route traffic when live telemetry is current."""
-    healthy, payload = _telemetry_readiness()
-    return JSONResponse(status_code=200 if healthy else 503, content=payload)
+    """Application readiness with telemetry state reported in the JSON body."""
+    application_ready, payload = _telemetry_readiness()
+    return JSONResponse(status_code=200 if application_ready else 503, content=payload)
 
 
 @app.get("/metrics")

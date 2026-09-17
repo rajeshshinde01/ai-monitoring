@@ -216,7 +216,7 @@ Repeated error patterns can be saved as persistent alert rules from the UI.
   log pattern.
 
 - `GET /health` – process liveness check
-- `GET /ready` – telemetry readiness check; returns `503` when collection is failing or stale
+- `GET /ready` – application-readiness check; returns telemetry status in its JSON body while keeping the dashboard reachable when collection is degraded
 - `GET /api/overview` – summary, pod metrics, alerts, logs, and forecasts
 - `GET /api/pods/{pod_name}/forecast` – forecast for one pod
 
