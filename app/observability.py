@@ -1725,25 +1725,25 @@ class OperationalHistory:
                 "risk": max(pod.get("risk", "healthy"), forecast.get("forecast_risk", "healthy"), key={"healthy": 0, "warning": 1, "critical": 2}.get),
             })
         capacity.sort(key=lambda item: max(item["cpu_percent"], item["memory_percent"], item["forecast_percent"]), reverse=True)
-        nodes = []
-        for pod in active:
-            label = pod["name"]
-            lowered = label.lower()
-            kind = "Database" if any(token in lowered for token in ("postgres", "mysql", "mongo", "redis")) else "Frontend" if any(token in lowered for token in ("frontend", "web", "ui")) else "AI runtime" if "ollama" in lowered else "Backend" if any(token in lowered for token in ("backend", "api", "server")) else "Workload"
-            nodes.append({"id": label, "label": label, "kind": kind, "status": pod.get("risk", "healthy")})
-        ids_by_kind: dict[str, list[str]] = {}
-        for node in nodes:
-            ids_by_kind.setdefault(node["kind"], []).append(node["id"])
-        edges = []
-        for source in ids_by_kind.get("Frontend", []):
-            for target in ids_by_kind.get("Backend", []):
-                edges.append({"from": source, "to": target, "label": "HTTP/API"})
-        for source in ids_by_kind.get("Backend", []):
-            for target in ids_by_kind.get("Database", []):
-                edges.append({"from": source, "to": target, "label": "data"})
-            for target in ids_by_kind.get("AI runtime", []):
-                edges.append({"from": source, "to": target, "label": "AI"})
-        dependencies = [{"name": node["label"], "type": node["kind"], "status": node["status"], "detail": "Live workload telemetry"} for node in nodes]
+        # Kubernetes can prove that a Service selects a workload through its
+        # selector. It cannot prove application-to-application calls without
+        # tracing, so the topology intentionally shows only these verified links.
+        nodes, edges, dependencies = [], [], []
+        for workload in snapshot.get("deployments", []):
+            services = workload.get("services", [])
+            if not services:
+                continue
+            workload_id = f"workload:{workload['name']}"
+            status = "healthy" if workload.get("status") in {"Ready", "Completed"} else "warning"
+            nodes.append({"id": workload_id, "label": workload["name"], "kind": workload.get("type", "Workload"), "status": status})
+            resources = workload.get("resources", [])
+            dependencies.append({"name": workload["name"], "pod": resources[0].get("pod", {}).get("name", ""), "type": workload.get("type", "Workload"), "status": status, "detail": "Selected by a Kubernetes Service"})
+            for service in services:
+                service_id = f"service:{service['name']}"
+                if not any(node["id"] == service_id for node in nodes):
+                    nodes.append({"id": service_id, "label": service["name"], "kind": "Kubernetes Service", "status": status})
+                ports = ", ".join(service.get("ports", [])) or "service selector"
+                edges.append({"from": service_id, "to": workload_id, "label": ports})
         ordered_events = list(reversed(events))
         return {"range_minutes": minutes, "samples": samples, "events": ordered_events, "deployment_changes": [event for event in ordered_events if event.get("kind") == "deployment"], "slo": slo, "capacity": capacity, "service_map": {"nodes": nodes, "edges": edges}, "dependencies": dependencies}
 
