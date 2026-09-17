@@ -211,16 +211,23 @@ function renderServiceHealth(report) {
     return `<article><div><strong>${escapeHtml(String(item.environment).toUpperCase())}</strong><small>${item.endpoints} endpoint${item.endpoints === 1 ? '' : 's'} · ${item.checks} checks</small></div><div><span class="status ${state}"><i></i>${availabilityText}</span><small>${item.attention ? `${item.attention} endpoint${item.attention === 1 ? '' : 's'} need review` : 'All monitored endpoints on target'}</small></div></article>`;
   }).join('') || '<p>No environment URLs are configured yet. Add URLs in URL Monitoring to compare Dev, QA, UAT, and other environments here.</p>';
   target.className = 'service-health-content';
-  target.innerHTML = `<div class="service-health-summary">
-    <article><span>Observed availability</span><strong>${serviceHealthValue(availability.percent, '%')}</strong><small>${availability.percent == null ? 'Waiting for completed checks' : `${availability.meets_target ? 'Meeting' : 'Below'} the ${targetPercent}% service target`}</small></article>
-    <article><span>Evidence coverage</span><strong>${coverage.checks || 0}</strong><small>${coverageText}</small></article>
-    <article><span>Release activity</span><strong>${releases.observed_last_24h || 0}</strong><small>${escapeHtml(releases.note || 'Current operational window')}</small></article>
-    <article><span>Incident outcomes</span><strong>${incidents.open || 0} open</strong><small>${incidents.collecting ? 'Incident history is still collecting' : `${incidents.recovered_30d || 0} recovered in 30 days`}</small></article>
+  const summaryCards = [
+    { label: 'Observed availability', value: serviceHealthValue(availability.percent, '%'), detail: availability.percent == null ? 'Waiting for completed checks' : `${availability.meets_target ? 'Meeting' : 'Below'} the ${targetPercent}% service target`, action: 'View endpoint history', page: 'url-monitoring', hash: '#url-monitoring' },
+    { label: 'Evidence coverage', value: coverage.checks || 0, detail: coverageText, action: 'Review coverage', page: 'url-monitoring', hash: '#url-monitoring' },
+    { label: 'Release activity', value: releases.observed_last_24h || 0, detail: releases.note || 'Current operational window', action: 'View releases', page: 'workloads', hash: '#workloads' },
+    { label: 'Incident outcomes', value: `${incidents.open || 0} open`, detail: incidents.collecting ? 'Incident history is still collecting' : `${incidents.recovered_30d || 0} recovered in 30 days`, action: 'View incidents', page: 'alerts', hash: '#alerts' },
+  ];
+  target.innerHTML = `<div class="service-health-summary">${summaryCards.map(card => `<button type="button" data-service-health-page="${card.page}" data-service-health-hash="${card.hash}"><span>${escapeHtml(card.label)}</span><strong>${escapeHtml(String(card.value))}</strong><small>${escapeHtml(card.detail)}</small><em>${escapeHtml(card.action)} →</em></button>`).join('')}</div>
   </div>
   <section class="service-health-explainer"><span class="status ${availabilityState}"><i></i>${availability.percent == null ? 'Collecting evidence' : availability.meets_target ? 'On target' : 'Needs review'}</span><p><strong>How to read this view:</strong> availability is calculated from retained URL checks only. It is an internal service target, not a contractual SLA.</p></section>
   <section class="service-health-table"><div class="panel-title"><div><p class="eyebrow">APPLICATION AVAILABILITY</p><h3>Endpoints in the current reporting period</h3></div><span class="muted">Target ${targetPercent}%</span></div><div class="table-wrap"><table><thead><tr><th>Application</th><th>Current state</th><th>Availability</th><th>Latest check</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
   <section class="service-health-environments"><div><p class="eyebrow">ENVIRONMENT COMPARISON</p><h3>How each delivery environment is performing</h3><p>Compare retained URL-check evidence across the environments that have been configured.</p></div><div class="service-health-environment-list">${environmentRows}</div></section>
   <section class="service-health-attention"><div><p class="eyebrow">MANAGEMENT ATTENTION</p><h3>${attention.length ? 'Items worth reviewing' : 'No service exceptions in the current view'}</h3></div><div>${attention.length ? attention.map(item => `<article><span class="status ${item.current_status === 'down' ? 'critical' : 'warning'}"><i></i>${escapeHtml(item.name)}</span><p>${item.availability_percent == null ? 'Checks are still being collected for this endpoint.' : `${serviceHealthValue(item.availability_percent, '%')} availability against the ${targetPercent}% target.`}</p></article>`).join('') : '<p>Continue normal monitoring. New endpoint, release, and incident evidence will appear here only when it needs attention.</p>'}</div></section>`;
+  target.querySelectorAll('[data-service-health-page]').forEach(button => button.addEventListener('click', () => {
+    window.history.pushState(null, '', button.dataset.serviceHealthHash);
+    setWorkspacePage(button.dataset.serviceHealthPage);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }));
 }
 
 async function loadServiceHealth() {
