@@ -1725,16 +1725,22 @@ class OperationalHistory:
                 "risk": max(pod.get("risk", "healthy"), forecast.get("forecast_risk", "healthy"), key={"healthy": 0, "warning": 1, "critical": 2}.get),
             })
         capacity.sort(key=lambda item: max(item["cpu_percent"], item["memory_percent"], item["forecast_percent"]), reverse=True)
-        # Kubernetes can prove that a Service selects a workload through its
-        # selector. It cannot prove application-to-application calls without
-        # tracing, so the topology intentionally shows only these verified links.
-        nodes, edges, dependencies = [], [], []
+        # Kubernetes can prove Route/Ingress -> Service and Service -> workload
+        # selector relationships.  It cannot prove application-to-application
+        # calls without tracing, so never infer those links from names.
+        nodes, edges, dependencies, connections = [], [], [], []
+        is_docker = snapshot.get("mode") == "docker"
+        local_services = []
         for workload in snapshot.get("deployments", []):
             services = workload.get("services", [])
             if not services:
                 continue
             workload_id = f"workload:{workload['name']}"
             status = "healthy" if workload.get("status") in {"Ready", "Completed"} else "warning"
+            if is_docker:
+                service = services[0]
+                local_services.append({"name": workload["name"], "kind": workload.get("type", "Docker service"), "status": status, "ports": service.get("ports", [])})
+                continue
             nodes.append({"id": workload_id, "label": workload["name"], "kind": workload.get("type", "Workload"), "status": status})
             resources = workload.get("resources", [])
             dependencies.append({"name": workload["name"], "pod": resources[0].get("pod", {}).get("name", ""), "type": workload.get("type", "Workload"), "status": status, "detail": "Selected by a Kubernetes Service"})
@@ -1744,8 +1750,20 @@ class OperationalHistory:
                     nodes.append({"id": service_id, "label": service["name"], "kind": "Kubernetes Service", "status": status})
                 ports = ", ".join(service.get("ports", [])) or "service selector"
                 edges.append({"from": service_id, "to": workload_id, "label": ports})
+                routes = service.get("routes", [])
+                if routes:
+                    for route in routes:
+                        endpoint = route if str(route).startswith(("http://", "https://")) else f"https://{route}"
+                        endpoint_id = f"endpoint:{endpoint}"
+                        if not any(node["id"] == endpoint_id for node in nodes):
+                            nodes.append({"id": endpoint_id, "label": endpoint, "kind": "Route / Ingress", "status": status})
+                        edges.append({"from": endpoint_id, "to": service_id, "label": "public endpoint"})
+                        connections.append({"endpoint": endpoint, "endpoint_kind": "Route / Ingress", "service": service["name"], "ports": ports, "workload": workload["name"], "workload_kind": workload.get("type", "Workload"), "status": status})
+                else:
+                    connections.append({"endpoint": "", "endpoint_kind": "Internal service", "service": service["name"], "ports": ports, "workload": workload["name"], "workload_kind": workload.get("type", "Workload"), "status": status})
         ordered_events = list(reversed(events))
-        return {"range_minutes": minutes, "samples": samples, "events": ordered_events, "deployment_changes": [event for event in ordered_events if event.get("kind") == "deployment"], "slo": slo, "capacity": capacity, "service_map": {"nodes": nodes, "edges": edges}, "dependencies": dependencies}
+        service_map = {"mode": "docker" if is_docker else "kubernetes", "nodes": nodes, "edges": edges, "connections": connections, "local_services": local_services}
+        return {"range_minutes": minutes, "samples": samples, "events": ordered_events, "deployment_changes": [event for event in ordered_events if event.get("kind") == "deployment"], "slo": slo, "capacity": capacity, "service_map": service_map, "dependencies": dependencies}
 
 
 class IncidentEvidence:
