@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+from statistics import median
 import time
 import gzip
 from threading import Event, Lock, Thread
@@ -691,24 +692,41 @@ def live_memory_status(pod: Pod) -> dict[str, Any]:
         headers = {"Authorization": f'Bearer {os.getenv("PROMETHEUS_API_TOKEN")}' } if os.getenv("PROMETHEUS_API_TOKEN", "").strip() else {}
         response = requests.get(
             f"{prometheus_url}/api/v1/query_range",
-            params={"query": f'pulseops_container_memory_bytes{{container="{pod.name}"}}', "start": now - 900, "end": now, "step": "5"},
+            params={"query": f'pulseops_container_memory_bytes{{container="{pod.name}"}}', "start": now - 86400, "end": now, "step": "300"},
             headers=headers,
             timeout=2,
             verify=os.getenv("PROMETHEUS_VERIFY_TLS", "true").lower() == "true",
         )
         response.raise_for_status()
         values = [value for series in response.json().get("data", {}).get("result", []) for value in series.get("values", [])]
-        samples = [(float(timestamp), float(value) / (1024 * 1024)) for timestamp, value in values]
+        samples = sorted({float(timestamp): float(value) / (1024 * 1024) for timestamp, value in values}.items())
+        # A pod name is normally unique after a rollout.  Still, do not combine
+        # any sample older than the currently observed pod instance.
+        try:
+            created_at = datetime.fromisoformat(pod.created_at.replace("Z", "+00:00")).timestamp() if pod.created_at else 0
+            samples = [item for item in samples if item[0] >= created_at]
+        except (ValueError, TypeError):
+            pass
         history = [{"timestamp": int(timestamp), "memory_mib": round(memory, 2)} for timestamp, memory in samples]
-        if len(samples) < 3:
-            return {**base, "available": False, "samples": len(samples), "history": history, "message": f"Prometheus is collecting history ({len(samples)} samples). Forecast activates after 3 readings."}
-        first_time, first_value = samples[0]
-        last_time, last_value = samples[-1]
-        slope_per_second = (last_value - first_value) / max(last_time - first_time, 1)
-        predicted_mib = max(0, last_value + slope_per_second * 900)
-        predicted_percent = round(predicted_mib / max(pod.memory_limit_mib, 1) * 100, 1)
-        prediction_risk = "critical" if predicted_percent >= 95 else "warning" if predicted_percent >= 85 else "healthy"
-        return {**base, "available": True, "samples": len(samples), "history": history, "forecast_memory_mib": round(predicted_mib, 1), "forecast_percent": predicted_percent, "forecast_risk": prediction_risk, "message": "15-minute forecast calculated from live Prometheus history."}
+        coverage_hours = round((samples[-1][0] - samples[0][0]) / 3600, 1) if len(samples) > 1 else 0.0
+        if len(samples) < 12 or coverage_hours < 1:
+            return {**base, "available": False, "samples": len(samples), "history": history, "coverage_hours": coverage_hours, "history_window_hours": 24, "message": f"Prometheus is collecting 24-hour history ({coverage_hours}h available). Forecast activates after one hour of readings."}
+        # Theil-Sen-style median slope resists a short memory spike better than
+        # the old first-to-last calculation. Cap the fit set to keep collection
+        # predictable even when Prometheus returns dense history.
+        fit_step = max(1, len(samples) // 72)
+        fit_samples = samples[::fit_step]
+        slopes = [(right_value - left_value) / (right_time - left_time) for index, (left_time, left_value) in enumerate(fit_samples[:-1]) for right_time, right_value in fit_samples[index + 1:] if right_time > left_time]
+        slope_per_second = median(slopes) if slopes else 0.0
+        last_value = samples[-1][1]
+        def projection(hours: int) -> tuple[float, float]:
+            mib = max(0, last_value + slope_per_second * hours * 3600)
+            return round(mib, 1), round(mib / max(pod.memory_limit_mib, 1) * 100, 1)
+        forecast_1h_mib, forecast_1h_percent = projection(1)
+        forecast_4h_mib, forecast_4h_percent = projection(4)
+        prediction_risk = "critical" if forecast_4h_percent >= 95 else "warning" if forecast_4h_percent >= 85 else "healthy"
+        confidence = "full 24-hour history" if coverage_hours >= 23 else f"{coverage_hours}h of 24h history"
+        return {**base, "available": True, "samples": len(samples), "history": history, "coverage_hours": coverage_hours, "history_window_hours": 24, "forecast_1h_mib": forecast_1h_mib, "forecast_1h_percent": forecast_1h_percent, "forecast_4h_mib": forecast_4h_mib, "forecast_4h_percent": forecast_4h_percent, "forecast_memory_mib": forecast_4h_mib, "forecast_percent": forecast_4h_percent, "forecast_risk": prediction_risk, "message": f"1-hour and 4-hour projections use {confidence} and a robust memory trend."}
     except (requests.RequestException, ValueError, KeyError, TypeError):
         return {**base, "available": False, "samples": 0, "message": "Prometheus is starting or has not returned container history yet."}
 
@@ -856,7 +874,7 @@ def _retrieve_operations_evidence(snapshot: dict[str, Any], question: str, curre
         counts = analysis.get("counts", {})
         candidates.append({"kind": "signal", "pod": pod_name, "text": f"{pod_name} analysis: severity {analysis.get('severity', 'healthy')}; errors {counts.get('errors', 0)}; warnings {counts.get('warnings', 0)}; OOM events {counts.get('oom_events', 0)}; findings: {' '.join(analysis.get('findings', []))}"})
     for item in snapshot.get("forecasts", []):
-        candidates.append({"kind": "forecast", "pod": item["pod"], "text": f"{item['pod']} memory forecast: current {item['current_percent']}%; " + (f"15-minute forecast {item['forecast_percent']}%." if item.get("available") else item.get("message", "Forecast is collecting history."))})
+        candidates.append({"kind": "forecast", "pod": item["pod"], "text": f"{item['pod']} memory forecast: current {item['current_percent']}%; " + (f"1-hour forecast {item.get('forecast_1h_percent', '—')}%; 4-hour forecast {item.get('forecast_4h_percent', item.get('forecast_percent', '—'))}%; {item.get('coverage_hours', 0)}h of retained history." if item.get("available") else item.get("message", "Forecast is collecting history."))})
     for alert in snapshot.get("alerts", []):
         candidates.append({"kind": "alert", "pod": alert["pod"], "text": f"{alert['severity']} alert for {alert['pod']}: {alert['message']}"})
     for pod_name, records in snapshot.get("structured_logs", {}).items():
