@@ -1,4 +1,8 @@
-from app.observability import AlertEngine, Pod, _mask_sensitive_log_content, analyse_logs, answer_operations_question, dashboard_snapshot, structure_logs
+from app.observability import AlertEngine, Pod, _mask_sensitive_log_content, _quantity_to_mib, analyse_logs, answer_operations_question, dashboard_snapshot, structure_logs
+
+
+def test_memory_quantity_supports_kubernetes_milli_bytes():
+    assert round(_quantity_to_mib("70058325333m"), 3) == 66.813
 
 
 def test_log_analysis_detects_critical_signals():

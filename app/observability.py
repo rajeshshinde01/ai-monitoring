@@ -113,6 +113,11 @@ class Pod:
 
 
 def _quantity_to_mib(value: str) -> float:
+    # Kubernetes quantity values may use the milli suffix even for memory.
+    # For example, 70058325333m means 70,058,325.333 bytes, not an invalid
+    # number. Metrics APIs commonly return that representation.
+    if value.endswith("m"):
+        return float(value[:-1]) / 1000 / (1024 * 1024)
     if value.endswith("Ki"):
         return float(value[:-2]) / 1024
     if value.endswith("Mi"):
