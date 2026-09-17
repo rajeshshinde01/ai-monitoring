@@ -381,7 +381,18 @@ function renderManagementSummary() {
   const recentChanges = (observabilityData.deployment_changes || []).length;
   const unmappedUrls = apps.filter(app => !app.relatedUrls.length).length;
   const unresolved = alertHistory.filter(event => event.state === 'active').length;
-  target.innerHTML = `<article><span>Service health</span><strong>${apps.length - atRisk.length}/${apps.length || 0} stable</strong><small>${atRisk.length ? `${atRisk.length} application${atRisk.length === 1 ? '' : 's'} need review.` : 'No application currently needs review.'}</small></article><article><span>Release watch</span><strong>${recentChanges} recent change${recentChanges === 1 ? '' : 's'}</strong><small>${recentChanges ? 'Open a workload to compare readiness and evidence after the release.' : 'No retained deployment change in the selected evidence window.'}</small></article><article><span>Alert lifecycle</span><strong>${unresolved} open</strong><small>${Number(alertHistoryReport?.windows?.['7d']?.recovered || 0)} recovered in the last 7 days.</small></article><article><span>Coverage</span><strong>${apps.length - unmappedUrls}/${apps.length || 0} URL mapped</strong><small>${unmappedUrls ? `${unmappedUrls} application${unmappedUrls === 1 ? '' : 's'} still need a URL monitor.` : 'Every reported application has a mapped URL monitor.'}</small></article>`;
+  const cards = [
+    { label: 'Service health', value: `${apps.length - atRisk.length}/${apps.length || 0} stable`, detail: atRisk.length ? `${atRisk.length} application${atRisk.length === 1 ? '' : 's'} need review.` : 'No application currently needs review.', hash: '#service-health', page: 'service-health', action: 'Open service health →' },
+    { label: 'Release watch', value: `${recentChanges} recent change${recentChanges === 1 ? '' : 's'}`, detail: recentChanges ? 'Compare readiness and evidence after the release.' : 'No retained deployment change in the selected evidence window.', hash: '#workloads', page: 'workloads', action: 'Open workload activity →' },
+    { label: 'Alert lifecycle', value: `${unresolved} open`, detail: `${Number(alertHistoryReport?.windows?.['7d']?.recovered || 0)} recovered in the last 7 days.`, hash: '#alerts', page: 'alerts', action: 'Open alerts →' },
+    { label: 'Coverage', value: `${apps.length - unmappedUrls}/${apps.length || 0} URL mapped`, detail: unmappedUrls ? `${unmappedUrls} application${unmappedUrls === 1 ? '' : 's'} still need a URL monitor.` : 'Every reported application has a mapped URL monitor.', hash: '#url-monitoring', page: 'url-monitoring', action: 'Open URL monitoring →' },
+  ];
+  target.innerHTML = cards.map(card => `<button type="button" class="management-summary-card" data-management-summary-page="${card.page}" data-management-summary-hash="${card.hash}"><span>${escapeHtml(card.label)}</span><strong>${escapeHtml(card.value)}</strong><small>${escapeHtml(card.detail)}</small><em>${escapeHtml(card.action)}</em></button>`).join('');
+  target.querySelectorAll('[data-management-summary-page]').forEach(button => button.addEventListener('click', () => {
+    window.history.pushState(null, '', button.dataset.managementSummaryHash);
+    setWorkspacePage(button.dataset.managementSummaryPage);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }));
 }
 
 async function saveUrlMonitor(event) {
