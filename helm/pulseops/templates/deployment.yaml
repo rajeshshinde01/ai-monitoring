@@ -50,6 +50,10 @@ spec:
             {{- end }}
             - name: PROMETHEUS_ALLOWED_HOSTS
               value: {{ .Values.monitoring.prometheusAllowedHosts | quote }}
+            - name: ELASTICWATCH_URL
+              value: {{ .Values.elasticWatch.url | quote }}
+            - name: ELASTICWATCH_VERIFY_TLS
+              value: {{ .Values.elasticWatch.verifyTls | quote }}
             - name: DATA_DIR
               value: /data
             - name: OLLAMA_ENABLED
