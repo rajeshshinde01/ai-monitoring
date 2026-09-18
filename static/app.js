@@ -177,10 +177,37 @@ const command = (label, value, note = '') => `<div class="command-card"><div><st
 // These are deliberately global because summary cards and the floating
 // Intelligence assistant can be opened from outside the main workspace setup.
 function pageFromTarget(targetId) {
-  const page = targetId === 'operations' || targetId === 'observability-center' ? 'overview' : targetId === 'workloads' || targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'pod-logs' || targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'service-health' ? 'service-health' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access' || targetId === 'access-center' ? 'access' : targetId === 'intelligence' || targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alerts' || targetId === 'alert-center' ? 'alerts' : 'overview';
-  if ((page === 'access' || page === 'data-sources') && !isAdministrator()) return 'overview';
+  const page = targetId === 'operations' || targetId === 'observability-center' ? 'overview' : targetId === 'workloads' || targetId === 'deployment-readiness' || targetId === 'deployment-inspector' || targetId === 'container-monitoring' ? 'workloads' : targetId === 'pod-logs' || targetId === 'log-explorer-panel' ? 'logs' : targetId === 'developer-investigation' ? 'investigation' : targetId === 'url-monitoring' ? 'url-monitoring' : targetId === 'service-health' ? 'service-health' : targetId.startsWith('elasticwatch-') ? 'elastic-watch' : targetId === 'es-restore' ? 'es-restore' : targetId === 'data-sources' ? 'data-sources' : targetId === 'access' || targetId === 'access-center' ? 'access' : targetId === 'intelligence' || targetId === 'intelligence-center' ? 'intelligence' : targetId === 'alerts' || targetId === 'alert-center' ? 'alerts' : 'overview';
+  if ((page === 'access' || page === 'data-sources' || page === 'es-restore') && !isAdministrator()) return 'overview';
   if ((page === 'logs' || page === 'operations' || page === 'service-health') && !isDeveloperOrAdministrator()) return 'overview';
   return page;
+}
+
+const elasticWatchViews = {
+  'elasticwatch-home': { title: 'EW Home', copy: 'A concise entry point for Elasticsearch cluster health, current capacity, active signals, and Filebeat evidence.', purpose: 'Cluster overview and current operational posture.' },
+  'elasticwatch-node-fleet': { title: 'Node fleet', copy: 'Review node health, JVM heap, CPU, disk use, roles, and nodes that need attention.', purpose: 'Infrastructure health and capacity by Elasticsearch node.' },
+  'elasticwatch-cluster-internals': { title: 'Cluster internals', copy: 'Review cluster state, pending tasks, allocation context, performance, and lifecycle information.', purpose: 'Cluster-level operational evidence.' },
+  'elasticwatch-shards-inspector': { title: 'Shards inspector', copy: 'Inspect index status, shard allocation, unassigned shards, and allocation guidance.', purpose: 'Index and shard health without changing Elasticsearch.' },
+  'elasticwatch-log-explorer': { title: 'Log explorer', copy: 'Search Filebeat-ingested events by service, host, severity, and message pattern.', purpose: 'Evidence-led log investigation.' },
+  'elasticwatch-alerts-incidents': { title: 'Alerts & incidents', copy: 'Review active cluster signals, repeated error patterns, and captured incident context.', purpose: 'Prioritised Elasticsearch and log-based signals.' },
+  'elasticwatch-console': { title: 'EW Console', copy: 'Run the existing approved, read-only Elastic Watch checks from one focused console.', purpose: 'Read-only operational inspection.' },
+};
+
+function renderElasticWatchView(targetId = (window.location.hash || '#elasticwatch-home').slice(1)) {
+  const view = elasticWatchViews[targetId] || elasticWatchViews['elasticwatch-home'];
+  const title = document.querySelector('#elasticwatch-title');
+  const copy = document.querySelector('#elasticwatch-copy');
+  const content = document.querySelector('#elasticwatch-content');
+  if (!title || !copy || !content) return;
+  title.textContent = view.title;
+  copy.textContent = view.copy;
+  content.innerHTML = `<div class="elasticwatch-purpose"><span>OPEN VIEW</span><strong>${escapeHtml(view.purpose)}</strong><small>The existing Elastic Watch module remains the source of its data and read-only checks.</small></div><div class="elasticwatch-view-grid">${Object.entries(elasticWatchViews).map(([id, item]) => `<button type="button" class="${id === targetId ? 'active' : ''}" data-elasticwatch-view="${id}"><span>${escapeHtml(item.title)}</span><small>${escapeHtml(item.purpose)}</small><b>${id === targetId ? 'Current view' : 'Open view'} →</b></button>`).join('')}</div>`;
+  content.querySelectorAll('[data-elasticwatch-view]').forEach(button => button.addEventListener('click', () => {
+    window.history.pushState(null, '', `#${button.dataset.elasticwatchView}`);
+    renderElasticWatchView(button.dataset.elasticwatchView);
+    setWorkspacePage('elastic-watch');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }));
 }
 
 function serviceHealthValue(value, suffix = '') {
@@ -428,13 +455,16 @@ async function saveUrlMonitor(event) {
 
 function setWorkspacePage(page) {
   document.body.dataset.page = page;
+  if (page === 'elastic-watch') renderElasticWatchView();
   // Command Center contains the Service Map and Dependency Health panels.
   // Keep that whole workspace out of focused pages even if a theme rule is overridden.
   const commandCenter = document.querySelector('#observability-center');
   if (commandCenter) commandCenter.hidden = page !== 'overview';
   document.querySelectorAll('[data-workspace-tab], .workspace-nav a').forEach(tab => {
     const targetId = (tab.getAttribute('href') || '#overview').slice(1);
-    const selected = pageFromTarget(targetId) === page && !(page === 'overview' && targetId !== 'overview');
+    const selected = page === 'elastic-watch'
+      ? targetId === (window.location.hash || '#elasticwatch-home').slice(1)
+      : pageFromTarget(targetId) === page && !(page === 'overview' && targetId !== 'overview');
     tab.classList.toggle('active', selected);
     if (selected) tab.setAttribute('aria-current', 'page'); else tab.removeAttribute('aria-current');
   });
