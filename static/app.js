@@ -193,6 +193,30 @@ const elasticWatchViews = {
   'elasticwatch-console': { title: 'EW Console', copy: 'Run the existing approved, read-only Elastic Watch checks from one focused console.', purpose: 'Read-only operational inspection.' },
 };
 
+const elasticWatchEndpoints = {
+  'elasticwatch-home': 'overview',
+  'elasticwatch-node-fleet': 'internals/nodes',
+  'elasticwatch-cluster-internals': 'internals/cluster-settings',
+  'elasticwatch-shards-inspector': 'shards',
+  'elasticwatch-log-explorer': 'log-patterns',
+  'elasticwatch-alerts-incidents': 'anomalies',
+  'elasticwatch-console': 'overview',
+};
+
+function renderElasticWatchPayload(target, payload) {
+  const items = Array.isArray(payload) ? payload : Object.entries(payload || {}).map(([label, value]) => ({ label, value }));
+  if (!items.length) {
+    target.innerHTML = '<div class="empty">Elastic Watch is connected, but this view has no current data.</div>';
+    return;
+  }
+  target.innerHTML = `<div class="elasticwatch-live-data">${items.slice(0, 30).map(item => {
+    const label = item.label || item.name || item.id || item.key || 'Result';
+    const value = item.value === undefined ? item : item.value;
+    const display = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '—');
+    return `<article><strong>${escapeHtml(label)}</strong><p>${escapeHtml(display)}</p></article>`;
+  }).join('')}</div>`;
+}
+
 function renderElasticWatchView(targetId = (window.location.hash || '#elasticwatch-home').slice(1)) {
   const view = elasticWatchViews[targetId] || elasticWatchViews['elasticwatch-home'];
   const title = document.querySelector('#elasticwatch-title');
@@ -201,7 +225,26 @@ function renderElasticWatchView(targetId = (window.location.hash || '#elasticwat
   if (!title || !copy || !content) return;
   title.textContent = view.title;
   copy.textContent = view.copy;
-  content.innerHTML = `<div class="elasticwatch-purpose"><span>OPEN VIEW</span><strong>${escapeHtml(view.purpose)}</strong><small>The existing Elastic Watch module remains the source of its data and read-only checks.</small></div><div class="elasticwatch-view-grid">${Object.entries(elasticWatchViews).map(([id, item]) => `<button type="button" class="${id === targetId ? 'active' : ''}" data-elasticwatch-view="${id}"><span>${escapeHtml(item.title)}</span><small>${escapeHtml(item.purpose)}</small><b>${id === targetId ? 'Current view' : 'Open view'} →</b></button>`).join('')}</div>`;
+  content.innerHTML = `<div class="elasticwatch-purpose"><span>LIVE CONNECTION</span><strong>${escapeHtml(view.purpose)}</strong><small id="elasticwatch-connection">Checking the Elastic Watch service…</small></div><div class="elasticwatch-view-grid">${Object.entries(elasticWatchViews).map(([id, item]) => `<button type="button" class="${id === targetId ? 'active' : ''}" data-elasticwatch-view="${id}"><span>${escapeHtml(item.title)}</span><small>${escapeHtml(item.purpose)}</small><b>${id === targetId ? 'Current view' : 'Open view'} →</b></button>`).join('')}</div>`;
+  fetch('/api/elasticwatch/status').then(async response => response.ok ? response.json() : Promise.reject()).then(status => {
+    const connection = content.querySelector('#elasticwatch-connection');
+    if (connection) connection.textContent = status.message;
+    if (!status.connected) return;
+    const endpoint = elasticWatchEndpoints[targetId] || elasticWatchEndpoints['elasticwatch-home'];
+    const data = document.createElement('div');
+    data.className = 'elasticwatch-live-data-wrap';
+    data.innerHTML = '<p class="muted">Loading live Elastic Watch data…</p>';
+    content.appendChild(data);
+    fetch(`/api/elasticwatch/${endpoint}`).then(async response => {
+      if (!response.ok) throw new Error('Elastic Watch request failed');
+      return response.json();
+    }).then(payload => renderElasticWatchPayload(data, payload)).catch(() => {
+      data.innerHTML = '<div class="empty">Elastic Watch is connected, but this view could not load. Check that the deployed service accepts the L1ControlScope gateway identity.</div>';
+    });
+  }).catch(() => {
+    const connection = content.querySelector('#elasticwatch-connection');
+    if (connection) connection.textContent = 'Unable to check the Elastic Watch connection.';
+  });
   content.querySelectorAll('[data-elasticwatch-view]').forEach(button => button.addEventListener('click', () => {
     window.history.pushState(null, '', `#${button.dataset.elasticwatchView}`);
     renderElasticWatchView(button.dataset.elasticwatchView);

@@ -28,6 +28,10 @@ services:
       SOURCE_COMMIT_SHA: ${SOURCE_COMMIT_SHA:-}
       SOURCE_DEFAULT_BRANCH: ${SOURCE_DEFAULT_BRANCH:-main}
       SOURCE_PATH: ${SOURCE_PATH:-}
+      # Address of the separately deployed Elastic Watch service. It is kept
+      # separate so its Elasticsearch endpoints cannot collide with this API.
+      ELASTICWATCH_URL: ${ELASTICWATCH_URL:-}
+      ELASTICWATCH_VERIFY_TLS: ${ELASTICWATCH_VERIFY_TLS:-true}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${KUBECONFIG_PATH:-/dev/null}:/root/.kube/config:ro

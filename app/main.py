@@ -53,6 +53,21 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 oauth = OAuth()
 
 
+def _elasticwatch_base_url() -> str:
+    """Return the explicitly configured Elastic Watch service address.
+
+    Elastic Watch remains a separate service because it owns Elasticsearch
+    credentials and has routes that overlap with L1ControlScope's own API.
+    """
+    value = os.getenv("ELASTICWATCH_URL", "").strip().rstrip("/")
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=503, detail="Elastic Watch service address is invalid.")
+    return value
+
+
 def _oidc_ready() -> bool:
     return all(os.getenv(name, "").strip() for name in ("OIDC_ISSUER_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_REDIRECT_URL"))
 
@@ -96,6 +111,51 @@ def require_developer_or_administrator(request: Request) -> dict[str, str]:
     if not user or user.get("role") not in {"administrator", "developer"}:
         raise HTTPException(status_code=403, detail="Developer / Operator or Administrator access is required for this feature.")
     return user
+
+
+@app.get("/api/elasticwatch/status")
+async def elasticwatch_status(request: Request) -> dict[str, Any]:
+    """Expose a safe readiness check for the separately deployed module."""
+    require_developer_or_administrator(request)
+    base_url = _elasticwatch_base_url()
+    if not base_url:
+        return {"connected": False, "message": "Elastic Watch is not connected. Configure its service address to load live Elasticsearch data."}
+    try:
+        async with httpx.AsyncClient(timeout=8.0, verify=os.getenv("ELASTICWATCH_VERIFY_TLS", "true").lower() == "true") as client:
+            response = await client.get(f"{base_url}/health")
+            response.raise_for_status()
+    except httpx.HTTPError:
+        return {"connected": False, "message": "Elastic Watch is configured but its service is not reachable."}
+    return {"connected": True, "message": "Elastic Watch is connected and ready to provide live Elasticsearch data."}
+
+
+@app.api_route("/api/elasticwatch/{path:path}", methods=["GET", "POST"])
+async def elasticwatch_gateway(path: str, request: Request) -> Response:
+    """Gateway Elastic Watch APIs under a collision-free L1ControlScope prefix."""
+    user = require_developer_or_administrator(request)
+    if path.startswith("esrestore/"):
+        require_administrator(request)
+    base_url = _elasticwatch_base_url()
+    if not base_url:
+        raise HTTPException(status_code=503, detail="Elastic Watch is not connected.")
+    target = f"{base_url}/api/{path.lstrip('/')}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=os.getenv("ELASTICWATCH_VERIFY_TLS", "true").lower() == "true") as client:
+            response = await client.request(
+                request.method,
+                target,
+                params=request.query_params,
+                content=await request.body(),
+                headers={
+                    "content-type": request.headers.get("content-type", "application/json"),
+                    "x-l1controlscope-user": user.get("email", ""),
+                    "x-l1controlscope-role": user.get("role", ""),
+                },
+            )
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail="Elastic Watch did not respond.") from error
+    allowed_headers = {key: value for key, value in response.headers.items() if key.lower() in {"content-type", "content-disposition"}}
+    return Response(content=response.content, status_code=response.status_code, headers=allowed_headers)
 
 
 def snapshot_for_user(snapshot: dict[str, Any], user: dict[str, str] | None) -> dict[str, Any]:
