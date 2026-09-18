@@ -26,12 +26,6 @@ monitoring:
   prometheusUrl: ""
   prometheusAllowedHosts: ""
 
-# Optional existing Elastic Watch service. This service remains separate from
-# L1ControlScope; its APIs are exposed in the UI through a collision-free path.
-elasticWatch:
-  url: ""
-  verifyTls: true
-
 ollama:
   enabled: false
   baseUrl: "http://ollama:11434"

@@ -18,12 +18,6 @@ monitoring:
   logTailLines: 200
   collectIntervalSeconds: 10
 
-# Existing Elastic Watch deployment to show its live Elasticsearch views in
-# L1ControlScope. Replace with the approved in-cluster service URL.
-elasticWatch:
-  url: "http://elasticwatch.gss-dev.svc.cluster.local:8000"
-  verifyTls: true
-
 # Keep local operational state across restarts. Use an approved StorageClass when required.
 persistence:
   enabled: true
