@@ -715,7 +715,7 @@ function renderObservability(report) {
   const relatedPod = (report?.events || []).find(item => item.pod && ['alert', 'restart', 'log'].includes(item.kind))?.pod || report?.capacity?.[0]?.pod;
   const action = !capacityView && riskSignalsPresent && relatedPod ? `<button type="button" class="trend-investigate" data-trend-investigate="${escapeHtml(relatedPod)}">Investigate highest-priority workload →</button>` : '';
   document.querySelector('#operations-trends').innerHTML = samples.length > 1
-    ? `<div class="trend-toolbar"><div><strong class="trend-view-title">${capacityView ? 'Capacity over time' : 'Operational risk signals'}</strong><span class="trend-reading-count">${samples.length} readings</span></div>${modeControls}${rangeControls}</div>${trendLegend}${!capacityView && !riskSignalsPresent ? '<div class="trend-quiet-state"><b>✓ No operational risk signals in this window</b><span>No log errors, warnings, or container restarts were observed.</span></div>' : `${trendKpis}<div class="trend-plot"><div class="trend-y-axis" aria-hidden="true"><span>${capacityView ? `${chartMaximum}%` : chartMaximum}</span><span>${capacityView ? `${Math.round(chartMaximum / 2)}%` : Math.ceil(chartMaximum / 2)}</span><span>0</span></div><div class="trend-canvas"><svg viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" role="img" aria-label="${capacityView ? 'CPU and memory usage trend' : 'Error, warning, and restart trend'}"><line class="trend-grid" x1="14" x2="906" y1="18" y2="18"/><line class="trend-grid" x1="14" x2="906" y1="125" y2="125"/><line class="trend-grid" x1="14" x2="906" y1="232" y2="232"/>${trendLines}</svg></div></div><div class="trend-axis"><span>${new Date(samples[0].timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><span>${capacityView ? `Live scale: 0–${chartMaximum}%` : `Live scale: 0–${eventMaximum} observed signals`}</span><span>${new Date(samples[samples.length - 1].timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div><p class="trend-reading" aria-live="polite">Select a point for its reading.</p>${action}`}<p class="trend-summary">${trendSummary}</p>`
+    ? `<div class="trend-toolbar"><div><strong class="trend-view-title">${capacityView ? 'Capacity over time' : 'Operational risk signals'}</strong><span class="trend-reading-count">${samples.length} readings</span></div>${modeControls}${rangeControls}</div>${trendLegend}${!capacityView && !riskSignalsPresent ? '<div class="trend-quiet-state"><b>✓ No operational risk signals in this window</b><span>No log errors, warnings, or container restarts were observed.</span></div>' : `${trendKpis}<div class="trend-plot"><div class="trend-y-axis" aria-hidden="true"><span>${capacityView ? `${chartMaximum}%` : chartMaximum}</span><span>${capacityView ? `${Math.round(chartMaximum / 2)}%` : Math.ceil(chartMaximum / 2)}</span><span>0</span></div><div class="trend-canvas"><svg data-trend-chart viewBox="0 0 ${chartWidth} ${chartHeight}" preserveAspectRatio="none" role="img" aria-label="${capacityView ? 'CPU and memory usage trend' : 'Error, warning, and restart trend'}"><line class="trend-grid" x1="14" x2="906" y1="18" y2="18"/><line class="trend-grid" x1="14" x2="906" y1="125" y2="125"/><line class="trend-grid" x1="14" x2="906" y1="232" y2="232"/>${trendLines}<rect class="trend-capture" x="14" y="18" width="892" height="214" fill="transparent"/></svg></div></div><div class="trend-axis"><span>${new Date(samples[0].timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><span>${capacityView ? `Live scale: 0–${chartMaximum}%` : `Live scale: 0–${eventMaximum} observed signals`}</span><span>${new Date(samples[samples.length - 1].timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></div><p class="trend-reading" aria-live="polite">Click anywhere on the chart for the nearest reading.</p>${action}`}<p class="trend-summary">${trendSummary}</p>`
     : `${modeControls}${rangeControls}<p class="empty">Collecting at least two live readings to draw operational trends.</p>`;
   document.querySelectorAll('[data-trend-range]').forEach(button => button.addEventListener('click', () => { observabilityMinutes = Number(button.dataset.trendRange); load(); }));
   document.querySelectorAll('[data-trend-mode]').forEach(button => button.addEventListener('click', () => { trendMode = button.dataset.trendMode; renderObservability(observabilityData); }));
@@ -724,6 +724,22 @@ function renderObservability(report) {
   document.querySelectorAll('[data-trend-reading]').forEach(point => {
     point.addEventListener('click', () => showTrendReading(point));
     point.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTrendReading(point); } });
+  });
+  document.querySelector('[data-trend-chart]')?.addEventListener('click', event => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const position = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+    const index = Math.round(position * (samples.length - 1));
+    const sample = samples[index];
+    const time = new Date(sample.timestamp * 1000).toLocaleTimeString();
+    const readings = capacityView
+      ? [['CPU', 'cpu', '%'], ['Memory', 'memory', '%']]
+      : [['Errors', 'errors', ' events'], ['Warnings', 'warnings', ' events'], ['Restarts', 'restarts', ' total']];
+    const visible = readings.filter(([, key]) => trendSeries[key]);
+    const text = visible.length
+      ? `${time} · ${visible.map(([label, key, suffix]) => `${label}: ${Number(sample.summary?.[key]) || 0}${suffix}`).join(' · ')}`
+      : `${time} · Select a metric in the legend to show a reading.`;
+    const reading = document.querySelector('.trend-reading');
+    if (reading) reading.textContent = text;
   });
   document.querySelector('[data-trend-investigate]')?.addEventListener('click', () => openPodInvestigation(document.querySelector('[data-trend-investigate]').dataset.trendInvestigate));
   const slo = report?.slo || {};
